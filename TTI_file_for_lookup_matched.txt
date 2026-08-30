@@ -1,0 +1,97 @@
+Hotel Nama and address 	TTI code	Match %
+"Domo de Aste,8Via Giovanni Battista Parodi17055Toirano|"	60744844	97.9
+"256 Watersong House 5 Bedroom by Florida Star,256Yellow Snap Dragon Drive33897Davenport|DVN"	60746262	98.9
+"Riad Bel Haj,60Derb Moulay Abdellah Ben HssaineNULLMarrakech|RAK"	60746797	98.2
+"Hotel Abhiraj Palace,B-49NULL302001Jaipur|JAI"	60749473	97.3
+"Yamazato Onsen Ryokan,1336NULL785-0027|CTS"	60750386	86
+"Maison de Vacances Aux Trois Tilleuls,NULLNULLMervelier|ZRH"	60752717	93.9
+"Casa di Montagna,1228196161Truckee|"	60752844	79.4
+"Mountain Town Properties Olaus House,1002V0G 1Y0Rossland|"	60754546	89.3
+"Privilege Appart-Hotel Saint-Exupery,1031000|TLS"	60756157	79.7
+"Eurostars Araguaney,515701|"		51.9
+"Palacio Azteca by Noktos,21322226|TIJ"		64.2
+"Relax Inn Vineland,9988360|MIV"		66.9
+"Inn Yut+,13665932|IKT"		47.7
+"Old Chicago Inn,322260657|"		63.2
+"Chateau De Raray,460810|BOD"		62.7
+"Starshine Hotel,13Zhongxing Road518000|"	60765633	88
+"Rodeway Inn & Suites,13010Old Hickory Boulevard37013-2411|BNA"	60767611	94.1
+"Hotel Khush Khush,NULLJain Temple Road471606|HJR"	60770797	86.8
+"Hospedaje Casa Barahona Mena,109Camino El Bosque2910752|"	60773255	91.3
+"Rancheria Utta,NULLCamino Al Faro441020|"	60775760	82.9
+"Aldea Bella,NULLNULLNULLSanta Ponsa|PMI"	60779142	97.7
+"Xichong Phoenix Tree Inn,67Xichong518121Shenzhen|SZX"	60781186	97.7
+"Hotel Adiba Residency,46056B Cross Road400093Bombay/ Mumbai|"	60784571	82.5
+"Gaststatte Blitz,NULLNULLNULL|CGN"	60784640	73.2
+"Appartements Burger,23Moosburgerstra�e9201Krumpendorf|"	60784811	87.8
+"Mae Chaem Hotel and Resort,NULLNULL50270Mae Chaem|CNX"	60784957	97
+"Llanwenarth,NULLBrecon RoadNP8 1EPAbergavenny|CWL"	60785793	97.7
+"Hotel Galma,36Strada Punctul Galma137310Moroeni|OTP"	60785964	97.8
+"Royal Olive Residence By Travelio,101Jalan Hj. Tutty Alawiyah12760Jakarta|"	60786135	98.4
+"Reggie's Haus,NULLNULL682309|COK"	60786342	77.2
+"Welcome Villa,NULLWelcome RoadNULLSt. George's|GND"	60787826	96.7
+"Hotel Blue Baytown,1931East Freeway77521Baytown|"	60788342	97.3
+"Drury Inn & Suites Phoenix Chandler Fashion Center,1205S Price Road85286|PHX"	60790077	97.2
+"Camping Le Ragis,NULL85300Challans|NTE"	60790124	96.7
+"Zur Linde,237Vockenberg8812Mariahof|INN"	60790251	97.3
+"Swagatam Hotel,NULLNULL|"		41.7
+"Chetola Premier Condominiums,185Chetola Lake Drive28605Blowing Rock|"	60790684	98.2
+"Black Jack,3APartyzant�w42-500|"	60790695	85.2
+"Union Street Inn,2229Union Street94123San Francisco|"	60791964	97.2
+"Hostal Royal,NULLNULLNULL|"		64.3
+"Hospedaje La Hoja,7Allende62520Tepoztlan|"	66935586	97.2
+"Arcus Suites,NULLNULL740 55Argiroupoli|CHQ"	66935677	92.3
+"Behrens, Benno,NULLNULLNULL|BRE"	66937073	71.7
+"Holiday Inn Express Madrid Airport,402Avenida de Aragon28022Madrid|MAD"	66937244	98.4
+"Apartamentos Valencia Holiday,1546010Valencia|VLC"		68.7
+"Hotel Saitej,NULLSavitri Marg402301Mahad|BOM"	66937313	97.3
+"Holland Park Lifestyle Studios,120Holland RoadW14 8BDLondon|"	66937506	97.8
+"Anh Duong Hotel,286/23NULLNULL|"	66937553	80
+"Carraig Mor,NULLNULLArdee|"		44.9
+"Pension Alpengluhn,156Ort8972Ramsau am Dachstein|"	66938477	97.6
+"By Aranykert,153300Eger|"		66.7
+"Happy Apartments Valencia,8Calle Pintor Domingo46001|"	66939164	95.7
+"Just Homestay by OYO,112698000Miri|MYY"	66939462	81
+"Motel 168 Jinan Shanda Road,NULLNULLNULLJinan|"	66940411	95.8
+"Sunb Residence,3775200Malacca|MKZ"	66940615	71.7
+"Hostal Chesal,940Calle Independencia78000San Luis Potosi|"	66940695	98
+"Il Mare Che Bacia La Spiaggia,2091015|PMO"	66940822	74.6
+"Las Aldas,NULLPanamericanaNULLLima|LIM"	66940957	98
+"The Oxford House,5NULLSwanage|"	66941051	72
+"Denis Private Island,NULLNULLNULLDenis Island|DEI"	66941211	100
+"Motorvina Homestay Hostel,NULL510000Son Trach|DAD"	66941277	90.6
+"Leviroyal Levin Tunturinlaita,NULLLaaksotie 5; 99130 LeviNULL|"	66942433	97.5
+"Jennifer's Silver Creek Villa by IPG Florida,17834Woodcrest Way34714Clermont|MCO"	66942546	98.7
+"Devlin Apartments,3123220Geelong|GEX"	66942822	75.5
+"Hospedaje Familiar Teresita,1087San Martin5700000Castro|MHC"	66942935	98.2
+"Courtyard Greenville Haywood Mall,7029615Greenville|"	66942993	76.9
+"Treasure X'press Inn,NULLNULLNULL|"	66943131	78.9
+"ASURE Brookvale Motel Wanaka,35NULLWanaka|"	66944055	72.5
+"Mani Village,NULLNULLNULLAgios Nikolaos|"	66944273	95.7
+"Tenuta Arangio Agriturismo Vendicari,19Strada Provincale96017|"	66944364	89.3
+"Time Out Art Camp,Plot 109080406Tiwi Beach|"	66944411	97.1
+"Hotel Tzalam Tulum,NULLCarretera Tulum-Boca Paila77760Tulum|"	66944455	98.8
+"Meson Yollotl,10-BCalle Veracruz72150Puebla|PBC"	66944480	97.8
+"Joi Hotel-Joyce Hotel,101RoadNULL|HKG"	66944524	75.7
+"Lakeview Boutique Hotel & Conference Centre,94Wilge RoadNULLBenoni|"	66946182	98.1
+"Domo de Aste,8Via Giovanni Battista Parodi17055Toirano|GOA"	60744844	98.2
+"Breda Hostel,251Rua Fresca23970-000Paraty|JPY"	66946640	97.6
+"Motel La Adela,2400Avenida Del Libertador8134La Adela|EZE"	66946684	97.8
+"Haus Nautic,36-44Emmastrasse27476|"	66946764	84.8
+"Hotel Casa,36Gwongwang-ro 142beon-gil16491Suwon|SEL"	66948342	97.8
+"Lighthouse Apartment,NULLNULLNULLPigeon Point|TAB"	66948557	100
+"Golden Guesthouse,250/1NULL81210|"	66948957	86.8
+"Pensiunea Vandor,40Street Principala547212Sovata|QSV"	66948971	98.1
+"Po Drodze,20/2Mickiewicza57-550|WRO"	66949015	70.9
+"Kohler Caroline,NULLNULL1400Yverdon-les-Bains|"	66950444	96.9
+"Vinos Suites@Dorsett Residence,172Jalan Imbi55100Kuala Lumpur|KUL"	66950557	98.4
+"Ringhotel Hohenlohe,14Weilertor74523Schwabisch Hall|QEI"	66950637	96.3
+"Villa Giglio Marino,64Via Acqualinora84047Paestum|NAP"	66950662	98
+"Hotel Boutique Palacio Corredera,49-51Corredera Street11402Jerez de la Frontera|XRY"	66950731	98.6
+"Thameside Hotel,144 - 150Caversham RoadRG1 8AZReading|"	66950855	97.7
+"Kull Irmgard,NULLNULLNULLPrien am Chiemsee|"	66951757	96
+"Novotel Firenze Nord Aeroporto,23Via Tevere50019Sesto Fiorentino|"	66951884	98.2
+"7Days Inn Tianjin Shierjing Road,NULL106 Bawei Road300000Tianjin|"	66952044	98.8
+"Glendale Hyde Park,8Devonshire TerraceW2 3DNLondon|LON"	66952193	99
+"Jannat Hills - Camps Dhrarmshala,NULLKhanyara Road176215Dharamsala|DHM"	66953382	98.3
+"Quality Inn Cheyenne,2245Etchepare Drive82007Cheyenne|CYS"	66953597	97.9

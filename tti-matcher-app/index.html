@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>TTI Code Matcher</title>
+<!-- React + ReactDOM (production builds) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<!-- Babel: lets the browser run JSX directly, no build step required -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+<!-- SheetJS: used only for the .xlsx export -->
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Plain JS: parsing + fuzzy matching engine, no JSX -->
+<script src="./matcher.js"></script>
+<!-- JSX: UI. Babel-standalone compiles this in the browser, no build step. -->
+<script type="text/babel" src="./app.js"></script>
+</body>
+</html>

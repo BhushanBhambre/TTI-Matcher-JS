@@ -1,16 +1,16 @@
 /**
  * app.js
  * ---------------------------------------------------------------------------
- * Modern React UI for TTI Code Matcher.
- * Features live telemetry, ETA calculation, step-by-step progress logging,
- * drag-and-drop file uploaders, worker multi-threading, and virtual preview.
+ * Professional React UI for TTI Code Matcher.
+ * Client-side fuzzy string matching engine with live telemetry, elapsed time,
+ * ETA estimation, worker parallelization, and table preview.
  * ---------------------------------------------------------------------------
  */
 
 const { useState, useCallback, useRef, useEffect } = React;
 
 function formatBytes(bytes) {
-  if (bytes === 0) return "0 B";
+  if (!bytes || bytes === 0) return "0 B";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -19,8 +19,13 @@ function formatBytes(bytes) {
 
 function formatSeconds(sec) {
   if (!sec || isNaN(sec) || sec < 0) return "00:00";
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
+  const totalSec = Math.floor(sec);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = Math.floor(totalSec % 60);
+  if (h > 0) {
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
@@ -49,9 +54,11 @@ function App() {
   const [lookupHeader, setLookupHeader] = useState("Hotel Name and address");
   const [errorMsg, setErrorMsg] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [filterMode, setFilterMode] = useState("all"); // all, matched, unmatched
+  const [filterMode, setFilterMode] = useState("all");
 
   const logEndRef = useRef(null);
+  const timerRef = useRef(null);
+  const startTimeRef = useRef(0);
 
   const addLog = useCallback((msg) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -64,6 +71,13 @@ function App() {
     }
   }, [logs]);
 
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
   const canProcess = masterFile && lookupFile && !processing;
 
   const handleProcess = useCallback(async () => {
@@ -75,6 +89,25 @@ function App() {
     setLogs([]);
     setStage("master_parse");
     setStageText("Stage 1/5: Streaming & Parsing Master File...");
+
+    startTimeRef.current = performance.now();
+    setTelemetry({
+      done: 0,
+      total: 0,
+      pct: 0,
+      matchedCount: 0,
+      recPerSec: 0,
+      elapsedSec: 0,
+      etaSec: 0,
+      activeWorkers: 0,
+    });
+
+    // Start live clock for total elapsed time tracking
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      const currentElapsed = Math.round((performance.now() - startTimeRef.current) / 1000);
+      setTelemetry((prev) => ({ ...prev, elapsedSec: currentElapsed }));
+    }, 500);
 
     addLog("=== Starting TTI Fuzzy Matching Process ===");
     addLog(`Master File: ${masterFile.name} (${formatBytes(masterFile.size)})`);
@@ -129,13 +162,14 @@ function App() {
         lookupData.lookupRows,
         threshold,
         (progress) => {
+          const currentElapsed = Math.round((performance.now() - startTimeRef.current) / 1000);
           setTelemetry({
             done: progress.done,
             total: progress.total,
             pct: progress.pct,
             matchedCount: progress.matchedCount,
             recPerSec: progress.recPerSec,
-            elapsedSec: progress.elapsedSec,
+            elapsedSec: currentElapsed,
             etaSec: progress.etaSec,
             activeWorkers: progress.activeWorkers,
           });
@@ -143,13 +177,24 @@ function App() {
         addLog
       );
 
+      // Stop timer and set final total time
+      if (timerRef.current) clearInterval(timerRef.current);
+      const finalTotalElapsed = Math.round((performance.now() - startTimeRef.current) / 1000);
+
       // Step 5: Done
       setStage("done");
       setStageText("Stage 5/5: Matching Complete!");
+      setTelemetry((prev) => ({
+        ...prev,
+        pct: 100,
+        elapsedSec: finalTotalElapsed,
+        etaSec: 0,
+      }));
       setResults(matchedResults);
-      addLog("Process completed successfully. Output ready for export.");
+      addLog(`Process completed successfully in ${formatSeconds(finalTotalElapsed)}. Output ready for export.`);
     } catch (err) {
       console.error(err);
+      if (timerRef.current) clearInterval(timerRef.current);
       setStage("error");
       setStageText("Error Occurred");
       setErrorMsg(err.message || String(err));
@@ -161,7 +206,7 @@ function App() {
 
   const handleDownloadTxt = useCallback(() => {
     if (!results) return;
-    addLog("Generating .txt export blob...");
+    addLog("Generating .txt export file...");
     const blob = matcherLib.generateTxtBlob(lookupHeader, results);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -176,7 +221,7 @@ function App() {
 
   const handleDownloadXlsx = useCallback(() => {
     if (!results) return;
-    addLog("Generating .xlsx workbook via SheetJS...");
+    addLog("Generating .xlsx workbook...");
     const aoa = [[lookupHeader, "TTI code", "Match %"]];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
@@ -207,47 +252,42 @@ function App() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 space-y-8">
-      {/* Header */}
+      {/* Professional Header */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-800">
         <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 via-purple-300 to-pink-400 bg-clip-text text-transparent">
-              TTI Code Matcher
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-              v2.0 Streaming Engine
-            </span>
-          </div>
+          <h1 className="text-2xl font-bold text-slate-100">
+            TTI Code Matcher
+          </h1>
           <p className="text-slate-400 text-sm mt-1">
-            High-speed local fuzzy string matching for millions of records using Web Workers & Trigram Candidate Blocking.
+            Fuzzy string matching for hotel datasets using Web Workers & Trigram Candidate Blocking.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/50 px-3.5 py-2 rounded-xl">
+        <div className="flex items-center gap-2 text-xs text-emerald-400 bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-lg">
           <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
           </svg>
-          <span className="font-medium">100% Local Browser Privacy & Processing</span>
+          <span className="font-medium">100% Local Browser Processing</span>
         </div>
       </header>
 
-      {/* Main Upload & Config Cards */}
+      {/* Main Upload & Parameter Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Master File Dropzone */}
-        <div className="glass-card rounded-2xl p-6 relative group overflow-hidden">
+        <div className="glass-card rounded-xl p-6">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+            <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7e0 2.21 3.582-4 8-4s8 1.79 8 4"/>
               </svg>
             </div>
             <div>
-              <h2 className="font-semibold text-slate-200">1. Master File</h2>
-              <p className="text-xs text-slate-400">Contains Master TTI codes (.txt/.tsv/.csv)</p>
+              <h2 className="font-semibold text-slate-200 text-sm">1. Master File</h2>
+              <p className="text-xs text-slate-400">Master TTI codes (.txt / .tsv / .csv)</p>
             </div>
           </div>
 
-          <label className="block border-2 border-dashed border-slate-700 hover:border-indigo-500/50 rounded-xl p-5 text-center cursor-pointer transition-colors bg-slate-900/40">
+          <label className="block border border-dashed border-slate-700 hover:border-slate-500 rounded-lg p-5 text-center cursor-pointer transition-colors bg-slate-900/50">
             <input
               type="file"
               accept=".txt,.tsv,.csv"
@@ -256,37 +296,37 @@ function App() {
             />
             {masterFile ? (
               <div className="space-y-1">
-                <p className="text-sm font-medium text-indigo-300 truncate">{masterFile.name}</p>
-                <p className="text-xs text-slate-400">{formatBytes(masterFile.size)}</p>
-                <span className="inline-block mt-2 text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40">Ready</span>
+                <p className="text-xs font-semibold text-indigo-300 truncate">{masterFile.name}</p>
+                <p className="text-[11px] text-slate-400">{formatBytes(masterFile.size)}</p>
+                <span className="inline-block mt-2 text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-800">Selected</span>
               </div>
             ) : (
               <div className="space-y-2 py-2">
-                <svg className="w-8 h-8 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-7 h-7 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
                 </svg>
-                <p className="text-xs text-slate-300 font-medium">Click to select Master File</p>
-                <p className="text-[11px] text-slate-500">Supports files up to 2GB+</p>
+                <p className="text-xs text-slate-300 font-medium">Select Master File</p>
+                <p className="text-[11px] text-slate-500">Supports large datasets</p>
               </div>
             )}
           </label>
         </div>
 
         {/* Lookup File Dropzone */}
-        <div className="glass-card rounded-2xl p-6 relative group overflow-hidden">
+        <div className="glass-card rounded-xl p-6">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+            <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
               </svg>
             </div>
             <div>
-              <h2 className="font-semibold text-slate-200">2. Lookup File</h2>
-              <p className="text-xs text-slate-400">Needs TTI codes mapped (.txt/.csv)</p>
+              <h2 className="font-semibold text-slate-200 text-sm">2. Lookup File</h2>
+              <p className="text-xs text-slate-400">Target records to match (.txt / .csv)</p>
             </div>
           </div>
 
-          <label className="block border-2 border-dashed border-slate-700 hover:border-purple-500/50 rounded-xl p-5 text-center cursor-pointer transition-colors bg-slate-900/40">
+          <label className="block border border-dashed border-slate-700 hover:border-slate-500 rounded-lg p-5 text-center cursor-pointer transition-colors bg-slate-900/50">
             <input
               type="file"
               accept=".txt,.tsv,.csv"
@@ -295,38 +335,38 @@ function App() {
             />
             {lookupFile ? (
               <div className="space-y-1">
-                <p className="text-sm font-medium text-purple-300 truncate">{lookupFile.name}</p>
-                <p className="text-xs text-slate-400">{formatBytes(lookupFile.size)}</p>
-                <span className="inline-block mt-2 text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40">Ready</span>
+                <p className="text-xs font-semibold text-indigo-300 truncate">{lookupFile.name}</p>
+                <p className="text-[11px] text-slate-400">{formatBytes(lookupFile.size)}</p>
+                <span className="inline-block mt-2 text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-800">Selected</span>
               </div>
             ) : (
               <div className="space-y-2 py-2">
-                <svg className="w-8 h-8 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-7 h-7 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
                 </svg>
-                <p className="text-xs text-slate-300 font-medium">Click to select Lookup File</p>
+                <p className="text-xs text-slate-300 font-medium">Select Lookup File</p>
                 <p className="text-[11px] text-slate-500">Supports millions of rows</p>
               </div>
             )}
           </label>
         </div>
 
-        {/* Configuration Card */}
-        <div className="glass-card rounded-2xl p-6 flex flex-col justify-between">
+        {/* Parameter Card */}
+        <div className="glass-card rounded-xl p-6 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-pink-500/10 text-pink-400 border border-pink-500/20">
+                <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
                   </svg>
                 </div>
                 <div>
-                  <h2 className="font-semibold text-slate-200">3. Parameters</h2>
-                  <p className="text-xs text-slate-400">Match score threshold</p>
+                  <h2 className="font-semibold text-slate-200 text-sm">3. Threshold</h2>
+                  <p className="text-xs text-slate-400">Match confidence minimum</p>
                 </div>
               </div>
-              <span className="text-2xl font-bold text-indigo-400 font-mono">{threshold}%</span>
+              <span className="text-xl font-bold text-indigo-400 font-mono">{threshold}%</span>
             </div>
 
             <div className="space-y-3">
@@ -337,7 +377,7 @@ function App() {
                 step="1"
                 value={threshold}
                 onChange={(e) => setThreshold(Number(e.target.value))}
-                className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
               />
               <div className="flex justify-between text-[11px] text-slate-400 font-medium">
                 <span>30% (Loose)</span>
@@ -350,15 +390,15 @@ function App() {
           <button
             onClick={handleProcess}
             disabled={!canProcess}
-            className={`w-full py-3.5 px-6 rounded-xl font-semibold text-sm transition-all duration-200 flex items-center justify-center gap-2 mt-4 shadow-lg ${
+            className={`w-full py-3 px-5 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2 mt-4 ${
               canProcess
-                ? "bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 hover:from-indigo-600 hover:to-pink-600 text-white active:scale-[0.99] active-glow cursor-pointer"
+                ? "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-sm"
                 : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
             }`}
           >
             {processing ? (
               <>
-                <svg className="animate-spin w-5 h-5 text-white" fill="none" viewBox="0 0 24 24">
+                <svg className="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
@@ -366,42 +406,42 @@ function App() {
               </>
             ) : (
               <>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                 </svg>
-                <span>Start High-Speed Matching</span>
+                <span>Start Matching</span>
               </>
             )}
           </button>
         </div>
       </div>
 
-      {/* Real-time Progress & Telemetry Section */}
+      {/* Progress & Telemetry Section */}
       {(processing || stage === "done" || stage === "error") && (
-        <div className="glass-card rounded-2xl p-6 space-y-6">
+        <div className="glass-card rounded-xl p-6 space-y-6">
           {/* Stage Banner */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60 p-4 rounded-xl border border-slate-800">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900 p-4 rounded-lg border border-slate-800">
             <div className="flex items-center gap-3">
-              <span className={`w-3 h-3 rounded-full ${processing ? "bg-indigo-400 animate-ping" : stage === "done" ? "bg-emerald-400" : "bg-red-400"}`}></span>
+              <span className={`w-2.5 h-2.5 rounded-full ${processing ? "bg-indigo-400 animate-pulse" : stage === "done" ? "bg-emerald-400" : "bg-red-400"}`}></span>
               <div>
                 <h3 className="font-semibold text-slate-100 text-sm">{stageText}</h3>
                 <p className="text-xs text-slate-400">
                   {stage === "matching"
                     ? `Running on ${telemetry.activeWorkers} parallel Web Workers`
                     : stage === "done"
-                    ? "Execution finished clean."
-                    : "Executing local operations"}
+                    ? "Execution completed."
+                    : "Processing stream..."}
                 </p>
               </div>
             </div>
-            <span className="font-mono text-xl font-bold text-indigo-400">{telemetry.pct}%</span>
+            <span className="font-mono text-lg font-bold text-indigo-400">{telemetry.pct}%</span>
           </div>
 
           {/* Progress Bar */}
-          <div className="space-y-2">
-            <div className="w-full bg-slate-900 rounded-full h-3 overflow-hidden p-0.5 border border-slate-800">
+          <div className="space-y-1.5">
+            <div className="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden border border-slate-800">
               <div
-                className="bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 h-full rounded-full transition-all duration-300"
+                className="bg-indigo-600 h-full rounded-full transition-all duration-200"
                 style={{ width: `${Math.min(100, Math.max(0, telemetry.pct))}%` }}
               ></div>
             </div>
@@ -414,31 +454,32 @@ function App() {
           {/* Telemetry Stat Grid */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {/* Stat 1: Elapsed Time */}
-            <div className="glass-card-sm p-4 rounded-xl space-y-1">
+            <div className="glass-card-sm p-4 rounded-lg space-y-1">
               <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Elapsed Time</p>
-              <p className="text-2xl font-bold font-mono text-slate-200">{formatSeconds(telemetry.elapsedSec)}</p>
+              <p className="text-xl font-bold font-mono text-slate-100">{formatSeconds(telemetry.elapsedSec)}</p>
             </div>
 
             {/* Stat 2: Dynamic ETA */}
-            <div className="glass-card-sm p-4 rounded-xl space-y-1">
+            <div className="glass-card-sm p-4 rounded-lg space-y-1">
               <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Estimated Time (ETA)</p>
-              <p className="text-2xl font-bold font-mono text-indigo-400">
+              <p className="text-xl font-bold font-mono text-indigo-400">
                 {processing && stage === "matching" ? formatSeconds(telemetry.etaSec) : "--:--"}
               </p>
             </div>
 
             {/* Stat 3: Processing Speed */}
-            <div className="glass-card-sm p-4 rounded-xl space-y-1">
-              <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Speed Rate</p>
-              <p className="text-2xl font-bold font-mono text-purple-400">
-                {telemetry.recPerSec > 0 ? `${telemetry.recPerSec.toLocaleString()}` : "0"} <span className="text-xs font-normal text-slate-400">rec/s</span>
+            <div className="glass-card-sm p-4 rounded-lg space-y-1">
+              <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Speed</p>
+              <p className="text-xl font-bold font-mono text-slate-200">
+                {telemetry.recPerSec > 0 ? `${telemetry.recPerSec.toLocaleString()}` : "0"}{" "}
+                <span className="text-xs font-normal text-slate-400">rec/s</span>
               </p>
             </div>
 
             {/* Stat 4: Match Count & Rate */}
-            <div className="glass-card-sm p-4 rounded-xl space-y-1">
+            <div className="glass-card-sm p-4 rounded-lg space-y-1">
               <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Matches Found</p>
-              <p className="text-2xl font-bold font-mono text-emerald-400">
+              <p className="text-xl font-bold font-mono text-emerald-400">
                 {telemetry.matchedCount.toLocaleString()}{" "}
                 <span className="text-xs font-normal text-slate-400">
                   ({telemetry.done > 0 ? ((telemetry.matchedCount / telemetry.done) * 100).toFixed(1) : 0}%)
@@ -447,21 +488,21 @@ function App() {
             </div>
           </div>
 
-          {/* Live Activity Terminal Log */}
+          {/* Event Log Console */}
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs font-medium text-slate-400">
               <span className="flex items-center gap-2">
-                <svg className="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                 </svg>
-                Live Event Documentation Console
+                Event Log
               </span>
-              <span>{logs.length} events logged</span>
+              <span>{logs.length} events</span>
             </div>
-            <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 h-40 overflow-y-auto custom-scrollbar space-y-1.5 leading-relaxed">
+            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3.5 font-mono text-xs text-slate-300 h-36 overflow-y-auto custom-scrollbar space-y-1 leading-relaxed">
               {logs.map((log, i) => (
                 <div key={i} className="flex gap-2">
-                  <span className="text-indigo-400/80 select-none">&gt;</span>
+                  <span className="text-slate-500 select-none">&gt;</span>
                   <span className={log.includes("[ERROR]") ? "text-red-400 font-semibold" : ""}>{log}</span>
                 </div>
               ))}
@@ -473,7 +514,7 @@ function App() {
 
       {/* Error Banner */}
       {errorMsg && (
-        <div className="p-4 rounded-xl bg-red-950/50 border border-red-800/60 text-red-300 text-sm flex items-center gap-3">
+        <div className="p-4 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-sm flex items-center gap-3">
           <svg className="w-5 h-5 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
           </svg>
@@ -484,22 +525,21 @@ function App() {
         </div>
       )}
 
-      {/* Export & Live Results Section */}
+      {/* Export & Results Section */}
       {results && results.length > 0 && (
-        <div className="glass-card rounded-2xl p-6 space-y-6">
-          {/* Action Bar */}
+        <div className="glass-card rounded-xl p-6 space-y-6">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pb-6 border-b border-slate-800">
             <div>
-              <h2 className="text-xl font-bold text-slate-100">Matching Results Ready</h2>
+              <h2 className="text-lg font-bold text-slate-100">Matching Results</h2>
               <p className="text-xs text-slate-400">
-                {results.length.toLocaleString()} total rows processed. Showing live preview below.
+                {results.length.toLocaleString()} rows processed. Download full dataset or preview below.
               </p>
             </div>
 
             <div className="flex items-center gap-3 w-full sm:w-auto">
               <button
                 onClick={handleDownloadTxt}
-                className="flex-1 sm:flex-initial py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2 shadow"
+                className="flex-1 sm:flex-initial py-2 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -509,7 +549,7 @@ function App() {
 
               <button
                 onClick={handleDownloadXlsx}
-                className="flex-1 sm:flex-initial py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2 shadow"
+                className="flex-1 sm:flex-initial py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -527,14 +567,14 @@ function App() {
                 placeholder="Search hotel or TTI code..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3.5 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
               />
             </div>
 
-            <div className="flex items-center gap-1.5 bg-slate-900/60 p-1 rounded-xl border border-slate-800 text-xs w-full sm:w-auto">
+            <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs w-full sm:w-auto">
               <button
                 onClick={() => setFilterMode("all")}
-                className={`px-3 py-1.5 rounded-lg transition-colors font-medium ${
+                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
                   filterMode === "all" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
@@ -542,7 +582,7 @@ function App() {
               </button>
               <button
                 onClick={() => setFilterMode("matched")}
-                className={`px-3 py-1.5 rounded-lg transition-colors font-medium ${
+                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
                   filterMode === "matched" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
@@ -550,7 +590,7 @@ function App() {
               </button>
               <button
                 onClick={() => setFilterMode("unmatched")}
-                className={`px-3 py-1.5 rounded-lg transition-colors font-medium ${
+                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
                   filterMode === "unmatched" ? "bg-amber-600 text-white" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
@@ -559,19 +599,19 @@ function App() {
             </div>
           </div>
 
-          {/* Table Preview */}
-          <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950/40">
+          {/* Preview Table */}
+          <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950">
             <div className="max-h-96 overflow-y-auto custom-scrollbar">
               <table className="w-full text-left border-collapse text-xs">
                 <thead className="bg-slate-900 sticky top-0 text-slate-400 border-b border-slate-800 font-semibold">
                   <tr>
-                    <th className="py-3 px-4 w-12">#</th>
-                    <th className="py-3 px-4">{lookupHeader}</th>
-                    <th className="py-3 px-4 w-48">Matched TTI Code</th>
-                    <th className="py-3 px-4 w-24 text-right">Score %</th>
+                    <th className="py-2.5 px-4 w-12">#</th>
+                    <th className="py-2.5 px-4">{lookupHeader}</th>
+                    <th className="py-2.5 px-4 w-48">Matched TTI Code</th>
+                    <th className="py-2.5 px-4 w-24 text-right">Score %</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800/60 text-slate-300 font-mono">
+                <tbody className="divide-y divide-slate-800 text-slate-300 font-mono">
                   {previewRows.map((r, i) => (
                     <tr key={i} className="hover:bg-slate-900/50 transition-colors">
                       <td className="py-2.5 px-4 text-slate-500">{r.rowIndex}</td>
@@ -590,10 +630,10 @@ function App() {
                           <span
                             className={`px-2 py-0.5 rounded font-bold ${
                               r.scorePct >= 80
-                                ? "bg-emerald-950 text-emerald-400 border border-emerald-800/40"
+                                ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
                                 : r.scorePct >= 60
-                                ? "bg-indigo-950 text-indigo-400 border border-indigo-800/40"
-                                : "bg-amber-950 text-amber-400 border border-amber-800/40"
+                                ? "bg-indigo-950 text-indigo-400 border border-indigo-800"
+                                : "bg-amber-950 text-amber-400 border border-amber-800"
                             }`}
                           >
                             {r.scorePct}%
@@ -609,8 +649,8 @@ function App() {
             </div>
 
             {filteredResults.length > 100 && (
-              <div className="bg-slate-900/80 px-4 py-2 text-center text-xs text-slate-400 border-t border-slate-800">
-                Showing first 100 preview rows of {filteredResults.length.toLocaleString()} matching records. Download full dataset via export buttons above.
+              <div className="bg-slate-900 px-4 py-2 text-center text-xs text-slate-400 border-t border-slate-800">
+                Showing first 100 preview rows of {filteredResults.length.toLocaleString()} records.
               </div>
             )}
           </div>

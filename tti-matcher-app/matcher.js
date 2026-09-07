@@ -24,6 +24,11 @@
  *    final "|"), an exact IATA match on a candidate gives it a small score
  *    bonus - it's a strong hint but not authoritative on its own (many
  *    lookup rows have no IATA at all).
+ * 6. UPDATED: instead of keeping only the single best-scoring master record
+ *    per lookup row, every candidate whose score clears the threshold is
+ *    returned (sorted best-first). This matters for cases like hotel chains
+ *    or multi-property addresses where more than one TTI code legitimately
+ *    matches the same lookup text.
  * ---------------------------------------------------------------------------
  */
 
@@ -38,6 +43,12 @@ const MASTER_COLUMNS = [
   "AddressCityName",
   "CityName",
 ];
+
+/** Cap on how many matches we'll return per lookup row, to keep output sane. */
+const MAX_MATCHES_PER_ROW = 20;
+
+/** Delimiter used to join multiple TTI codes / scores in the flat output columns. */
+const MULTI_DELIMITER = "; ";
 
 /**
  * Strip surrounding double quotes some exports wrap fields in.
@@ -212,14 +223,20 @@ function parseLookupFile(text) {
 }
 
 /**
- * Find the best-matching master record for one lookup blob using the
- * trigram inverted index for candidate blocking.
+ * Find every master record whose score against the lookup blob clears the
+ * threshold, using the trigram inverted index for candidate blocking.
+ * Replaces the old "single best match" behavior: multiple master rows can
+ * legitimately correspond to the same lookup text (e.g. chain properties,
+ * multiple buildings at one address), so we surface all of them.
+ *
  * @param {{blob: string, iata: string}} query
  * @param {{records: object[], index: Map<string, number[]>}} master
- * @returns {{ttiCode: string|null, score: number}} score in [0, 1]
+ * @param {number} thresholdPct Minimum match % (0-100) to accept a match.
+ * @returns {{ttiCode: string, score: number}[]} sorted best-first, score in [0, 1]
  */
-function findBestMatch(query, master) {
+function findAllMatches(query, master, thresholdPct) {
   const queryGrams = trigrams(query.blob);
+  const thresholdFrac = thresholdPct / 100;
 
   // Gather candidate record indices: anything sharing >=1 trigram.
   const candidateSet = new Set();
@@ -229,36 +246,48 @@ function findBestMatch(query, master) {
   }
 
   // Fallback: if nothing shares a trigram (e.g. very short/odd text),
-  // scan everything so we still return the closest possible match.
+  // scan everything so we still return the closest possible matches.
   const candidates = candidateSet.size > 0 ? candidateSet : master.records.keys();
 
-  let bestScore = 0;
-  let bestCode = null;
-
+  const matches = [];
   for (const i of candidates) {
     const rec = master.records[i];
     let score = diceScore(queryGrams, rec.grams);
     if (query.iata && rec.iata && query.iata === rec.iata) {
       score = Math.min(1, score * 0.85 + 0.15); // small, capped IATA bonus
     }
-    if (score > bestScore) {
-      bestScore = score;
-      bestCode = rec.ttiCode;
+    if (score >= thresholdFrac) {
+      matches.push({ ttiCode: rec.ttiCode, score });
     }
   }
 
-  return { ttiCode: bestCode, score: bestScore };
+  // Best-first, and cap so a degenerate blob (e.g. an almost-empty string)
+  // can't blow up the output with hundreds of low-quality matches.
+  matches.sort((a, b) => b.score - a.score);
+  return matches.slice(0, MAX_MATCHES_PER_ROW);
 }
 
 /**
  * Run matching for every lookup row against the master index, yielding
  * control back to the browser periodically so a progress bar can update
  * and the UI never freezes.
+ *
+ * Each result row now carries ALL matching TTI codes (above threshold),
+ * not just the single best one:
+ *   - ttiCode:   all matched codes joined with "; " (best-first) - handy
+ *                for a simple flat spreadsheet column, kept for
+ *                backwards-compatibility with existing UI code.
+ *   - scorePct:  the best (highest) match % among the row's matches.
+ *   - scores:    all match %s, same order as ttiCode, joined with "; ".
+ *   - matches:   the full structured list [{ttiCode, scorePct}, ...] in
+ *                case the UI wants to render them separately (e.g. one
+ *                row per match, or a dropdown of candidates).
+ *
  * @param {object} master  Result of parseMasterFile().
  * @param {object} lookup  Result of parseLookupFile().
  * @param {number} thresholdPct Minimum match % (0-100) to accept a match.
  * @param {(done: number, total: number) => void} onProgress
- * @returns {Promise<{original: string, ttiCode: string, scorePct: number}[]>}
+ * @returns {Promise<{original: string, ttiCode: string, scorePct: number, scores: string, matches: {ttiCode: string, scorePct: number}[]}[]>}
  */
 async function matchAll(master, lookup, thresholdPct, onProgress) {
   const results = [];
@@ -267,13 +296,19 @@ async function matchAll(master, lookup, thresholdPct, onProgress) {
 
   for (let i = 0; i < total; i++) {
     const row = lookup.rows[i];
-    const { ttiCode, score } = findBestMatch(row, master);
-    const scorePct = Math.round(score * 1000) / 10; // one decimal place
+    const rawMatches = findAllMatches(row, master, thresholdPct);
+
+    const matches = rawMatches.map((m) => ({
+      ttiCode: m.ttiCode,
+      scorePct: Math.round(m.score * 1000) / 10, // one decimal place
+    }));
 
     results.push({
       original: row.original,
-      ttiCode: scorePct >= thresholdPct ? ttiCode : "",
-      scorePct,
+      ttiCode: matches.map((m) => m.ttiCode).join(MULTI_DELIMITER),
+      scorePct: matches.length > 0 ? matches[0].scorePct : 0,
+      scores: matches.map((m) => m.scorePct).join(MULTI_DELIMITER),
+      matches,
     });
 
     if (i % YIELD_EVERY === 0 || i === total - 1) {

@@ -1,84 +1,67 @@
-# TTI Code Matcher
+# TTI Code Matcher (v2.0 High-Performance Streaming Engine)
 
-A tiny, static, client-side web app that fuzzy-matches hotels between your
-**master file** (has TTI codes) and your **lookup file** (needs TTI codes),
-and lets you download the result as `.txt` or `.xlsx`.
+A fast, client-side web application that fuzzy-matches hotel records between your **Master file** (contains TTI codes) and your **Lookup file** (needs TTI codes) using **Dice coefficient fuzzy matching, inverted trigram candidate blocking, chunked file streaming, and multi-threaded Web Workers**.
 
-Everything runs in the browser. There is no backend, no Python, and no build
-step — just 3 files.
+Everything runs **100% locally in your browser** — no data is uploaded to remote servers, no backend is required, and multi-gigabyte files with millions of records are processed without exceeding browser RAM memory limits.
 
-## Files
+---
 
-| File           | Purpose                                                        |
-|----------------|-----------------------------------------------------------------|
-| `index.html`   | Page shell, loads React/Babel/SheetJS from CDN                 |
-| `matcher.js`   | Parsing + fuzzy-matching engine (plain JS, documented)          |
-| `app.js`       | React UI (file pickers, progress bar, download buttons)         |
+## Key Features & Architecture
 
-## How the matching works
+- **Streaming File Reader (`streamReader.js`)**: Streams input files line-by-line in 4MB byte chunks using `ReadableStream` / `FileReader` so processing datasets with **millions of records** stays memory efficient.
+- **Inverted Trigram Candidate Blocking & Pruning (`matcher.js`)**: Converts records to 3-character shingles (trigrams) and builds an in-memory inverted index. Ultra-common stop-word trigrams are automatically pruned to restrict candidate evaluations to high-signal matches.
+- **Multi-Threaded Web Workers (`worker.js`)**: Spawns parallel Web Worker threads (auto-detected via `navigator.hardwareConcurrency`) to execute candidate blocking and Dice coefficient similarity scoring concurrently across CPU cores.
+- **Real-Time Telemetry & Progress Dashboard (`app.js`)**:
+  - **Live Stage Documenter**: Tracks execution through 5 distinct documented stages.
+  - **Dynamic ETA**: Live calculation of estimated time remaining (`MM:SS`) based on moving-average records per second.
+  - **Speed Counter**: Live records-per-second (`rec/sec`) rate monitor.
+  - **Event Console**: Real-time event log terminal detailing exact execution steps with timestamps.
+- **Modern Glassmorphic UI**: Sleek dark-mode interface with progress animations, stat telemetry grids, and search/filter table preview.
+- **Chunked Data Export**: Export matched results instantly to `.txt`/`.tsv` or `.xlsx` format.
 
-1. Each row (master and lookup) is reduced to a normalized text "blob"
-   (hotel name + address fields, lowercased, punctuation/`NULL` stripped).
-2. Blobs are compared with a **Dice coefficient over 3-character shingles**
-   (a standard, fast fuzzy string-similarity technique).
-3. An **inverted trigram index** over the master file means each lookup row
-   is only compared against master rows that actually share text with it,
-   instead of scanning all ~59,000 rows every time — this is what keeps
-   matching fast on large master files.
-4. If the lookup row has an IATA code (text after the final `|`) and it
-   exactly matches a candidate's IATA, that candidate gets a small score
-   boost — a helpful hint, not an absolute filter (many rows have no IATA).
-5. You set a **minimum match %**. Only matches at or above that score get a
-   TTI code written; everything else is left blank so you can review it.
+---
 
-Tested against the real ~59k-row master file: indexing takes a couple of
-seconds, and matching ~100 lookup rows takes well under a second.
+## File Structure
 
-## Run it locally
+| File               | Purpose                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------- |
+| `index.html`       | Page shell, includes fonts, Tailwind CSS CDN, React 18, Babel, SheetJS, and script loaders.       |
+| `streamReader.js`  | High-performance chunked file reader (`FileReader` / Web Streams) for multi-gigabyte file inputs. |
+| `worker.js`        | Web Worker thread script executing offloaded parallel candidate blocking and fuzzy matching.      |
+| `matcher.js`       | Core fuzzy matching engine, index generator, stop-word pruner, and Web Worker cluster manager.    |
+| `app.js`           | React UI component with live telemetry dashboard, ETA clock, event console, and table preview.    |
+| `netlify.toml`     | Configuration file for static site deployment.                                                    |
 
-Browsers block `fetch`/XHR of local files loaded via `file://`, and Babel's
-in-browser JSX compiler needs to fetch `app.js`, so open this with a tiny
-local server rather than double-clicking `index.html`:
+---
+
+## How the Matching Algorithm Works
+
+1. **Normalization**: Every record is stripped of non-alphanumeric characters, converted to lowercase, and literal `null` string placeholders are removed.
+2. **Trigram Extraction**: Each normalized blob is split into overlapping 3-character shingles.
+3. **Inverted Index & Pruning**: An inverted index maps each trigram to master row indices. High-frequency trigrams (stop-words) are projected out to ensure lightning-fast candidate retrieval.
+4. **Dice Coefficient Scoring**: Candidate pairs are scored using:
+   $$\text{Score} = \frac{2 \times |A \cap B|}{|A| + |B|}$$
+   If an IATA code is provided and matches, a small confidence bonus is applied.
+5. **Score Filtering**: Matches clearing the user-configured minimum match percentage threshold are returned.
+
+---
+
+## Running Locally
+
+Because browsers enforce security restrictions on Web Workers and file fetches loaded via `file://`, serve the directory using a simple local web server:
 
 ```bash
-# any of these work
+# Option 1: Using npx serve (Node.js)
 npx serve .
-# or
+
+# Option 2: Using Python
 python3 -m http.server 8080
 ```
 
-Then open the printed `http://localhost:...` URL.
+Then navigate to `http://localhost:3000` or `http://localhost:8080` in your web browser.
 
-## Deploy to Netlify
+---
 
-**Option A — drag and drop (fastest):**
-1. Go to https://app.netlify.com/drop
-2. Drag this whole folder (`index.html`, `matcher.js`, `app.js`,
-   `netlify.toml`) onto the page.
-3. Netlify gives you a live URL immediately. Done.
+## Deployment (Netlify / Static Hosting)
 
-**Option B — Git-based deploy:**
-1. Push this folder to a GitHub/GitLab repo.
-2. In Netlify: "Add new site" → "Import an existing project" → pick the repo.
-3. Build command: leave as-is (or blank) — it's a static site.
-   Publish directory: `.` (already set in `netlify.toml`).
-4. Deploy.
-
-No environment variables, API keys, or build tooling are needed.
-
-## Using the app
-
-1. Open the deployed page.
-2. Choose the **Master file** (the TTI Master file, tab-separated, first row
-   is headers, must include a `TTIcode` column).
-3. Choose the **Lookup file** (the TTI file for lookup — one quoted
-   name+address string per row, optionally ending in `|IATA`).
-4. Set the **minimum match %** (default 70 — raise it to be stricter, lower
-   it to catch more possible matches for manual review).
-5. Click **Process** and watch the progress bar.
-6. Click **Download .txt** or **Download .xlsx** to get the lookup file
-   back with a `TTI code` column (and a `Match %` column) filled in.
-
-Rows that don't reach the threshold are left with a blank TTI code rather
-than a guessed one — lower the threshold and re-run if you want to see what
-the closest (but low-confidence) candidate would have been.
+Simply drag and drop this folder onto [Netlify Drop](https://app.netlify.com/drop) or connect the repository to any static host. No server configuration, build commands, or environment variables are required.

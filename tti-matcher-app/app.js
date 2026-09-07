@@ -265,7 +265,7 @@ function App() {
 
         <div className="flex items-center gap-2 text-xs text-emerald-400 bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-lg">
           <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
           </svg>
           <span className="font-medium">100% Local Browser Processing</span>
         </div>
@@ -277,8 +277,33 @@ function App() {
         <div className="glass-card rounded-xl p-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7e0 2.21 3.582-4 8-4s8 1.79 8 4"/>
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                {/* Master document */}
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M6 3h8l4 4v14H6V3z"
+                />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M14 3v5h5"
+                />
+
+                {/* Crown / master indicator */}
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M9 13l1.5 2 1.5-3 1.5 3 1.5-2"
+                />
               </svg>
             </div>
             <div>
@@ -303,7 +328,7 @@ function App() {
             ) : (
               <div className="space-y-2 py-2">
                 <svg className="w-7 h-7 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
                 <p className="text-xs text-slate-300 font-medium">Select Master File</p>
                 <p className="text-[11px] text-slate-500">Supports large datasets</p>
@@ -317,7 +342,7 @@ function App() {
           <div className="flex items-center gap-3 mb-4">
             <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
               </svg>
             </div>
             <div>
@@ -342,7 +367,7 @@ function App() {
             ) : (
               <div className="space-y-2 py-2">
                 <svg className="w-7 h-7 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
                 <p className="text-xs text-slate-300 font-medium">Select Lookup File</p>
                 <p className="text-[11px] text-slate-500">Supports millions of rows</p>
@@ -358,7 +383,7 @@ function App() {
               <div className="flex items-center gap-3">
                 <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
                   </svg>
                 </div>
                 <div>
@@ -390,11 +415,10 @@ function App() {
           <button
             onClick={handleProcess}
             disabled={!canProcess}
-            className={`w-full py-3 px-5 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2 mt-4 ${
-              canProcess
+            className={`w-full py-3 px-5 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2 mt-4 ${canProcess
                 ? "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-sm"
                 : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
-            }`}
+              }`}
           >
             {processing ? (
               <>
@@ -407,7 +431,7 @@ function App() {
             ) : (
               <>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
                 <span>Start Matching</span>
               </>
@@ -429,8 +453,8 @@ function App() {
                   {stage === "matching"
                     ? `Running on ${telemetry.activeWorkers} parallel Web Workers`
                     : stage === "done"
-                    ? "Execution completed."
-                    : "Processing stream..."}
+                      ? "Execution completed."
+                      : "Processing stream..."}
                 </p>
               </div>
             </div>
@@ -493,7 +517,7 @@ function App() {
             <div className="flex items-center justify-between text-xs font-medium text-slate-400">
               <span className="flex items-center gap-2">
                 <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
                 Event Log
               </span>
@@ -516,7 +540,7 @@ function App() {
       {errorMsg && (
         <div className="p-4 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-sm flex items-center gap-3">
           <svg className="w-5 h-5 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <div>
             <p className="font-semibold">Processing Failed</p>
@@ -542,7 +566,7 @@ function App() {
                 className="flex-1 sm:flex-initial py-2 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 </svg>
                 <span>Download .txt / .tsv</span>
               </button>
@@ -552,7 +576,7 @@ function App() {
                 className="flex-1 sm:flex-initial py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 </svg>
                 <span>Download .xlsx</span>
               </button>
@@ -574,25 +598,22 @@ function App() {
             <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs w-full sm:w-auto">
               <button
                 onClick={() => setFilterMode("all")}
-                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
-                  filterMode === "all" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
+                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${filterMode === "all" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+                  }`}
               >
                 All ({results.length.toLocaleString()})
               </button>
               <button
                 onClick={() => setFilterMode("matched")}
-                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
-                  filterMode === "matched" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
+                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${filterMode === "matched" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-slate-200"
+                  }`}
               >
                 Matched ({results.filter((r) => r.ttiCode).length.toLocaleString()})
               </button>
               <button
                 onClick={() => setFilterMode("unmatched")}
-                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
-                  filterMode === "unmatched" ? "bg-amber-600 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
+                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${filterMode === "unmatched" ? "bg-amber-600 text-white" : "text-slate-400 hover:text-slate-200"
+                  }`}
               >
                 Unmatched ({results.filter((r) => !r.ttiCode).length.toLocaleString()})
               </button>
@@ -628,13 +649,12 @@ function App() {
                       <td className="py-2.5 px-4 text-right">
                         {r.scorePct > 0 ? (
                           <span
-                            className={`px-2 py-0.5 rounded font-bold ${
-                              r.scorePct >= 80
+                            className={`px-2 py-0.5 rounded font-bold ${r.scorePct >= 80
                                 ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
                                 : r.scorePct >= 60
-                                ? "bg-indigo-950 text-indigo-400 border border-indigo-800"
-                                : "bg-amber-950 text-amber-400 border border-amber-800"
-                            }`}
+                                  ? "bg-indigo-950 text-indigo-400 border border-indigo-800"
+                                  : "bg-amber-950 text-amber-400 border border-amber-800"
+                              }`}
                           >
                             {r.scorePct}%
                           </span>

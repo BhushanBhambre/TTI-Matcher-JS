@@ -2,8 +2,8 @@
  * app.js
  * ---------------------------------------------------------------------------
  * Professional React UI for TTI Code Matcher.
- * Handles 12GB+ datasets locally using background Web Worker master ingestion,
- * integer trigram hashing ($36^3 = 46,656$ buckets), and worker clusters.
+ * Features live worker progress tracking, active worker counts, speed,
+ * ETA calculation, and virtualized results table.
  * ---------------------------------------------------------------------------
  */
 
@@ -87,7 +87,7 @@ function App() {
     setResults(null);
     setLogs([]);
     setStage("master_parse");
-    setStageText("Stage 1/5: Background Streaming & Indexing Master File...");
+    setStageText("Stage 1/4: Parsing & Indexing Master File...");
 
     startTimeRef.current = performance.now();
     setTelemetry({
@@ -107,14 +107,14 @@ function App() {
       setTelemetry((prev) => ({ ...prev, elapsedSec: currentElapsed }));
     }, 500);
 
-    addLog("=== Starting High-Performance Fuzzy Matching Engine ===");
+    addLog("=== Starting Fuzzy Matching Engine ===");
     addLog(`Master File: ${masterFile.name} (${formatBytes(masterFile.size)})`);
     addLog(`Lookup File: ${lookupFile.name} (${formatBytes(lookupFile.size)})`);
     addLog(`Match Threshold: ${threshold}%`);
 
     try {
-      // Step 1 & 2: Stream & Index Master File in Background Worker
-      const masterData = await matcherLib.parseMasterInWorker(
+      // Step 1: Parse Master File
+      const masterData = await matcherLib.streamParseMasterFile(
         masterFile,
         (progress) => {
           setTelemetry((prev) => ({
@@ -127,9 +127,9 @@ function App() {
         addLog
       );
 
-      // Step 3: Stream Lookup File
+      // Step 2: Parse Lookup File
       setStage("lookup_parse");
-      setStageText("Stage 3/5: Streaming & Parsing Lookup File...");
+      setStageText("Stage 2/4: Parsing Lookup File...");
 
       const lookupData = await matcherLib.streamParseLookupFile(
         lookupFile,
@@ -146,9 +146,9 @@ function App() {
 
       setLookupHeader(lookupData.header);
 
-      // Step 4: Parallel Web Worker Matching
+      // Step 3: Parallel Web Worker Matching
       setStage("matching");
-      setStageText("Stage 4/5: High-Speed Web Worker Fuzzy Matching...");
+      setStageText("Stage 3/4: Matching Rows Across Workers...");
 
       const matchedResults = await matcherLib.matchAllParallel(
         masterData,
@@ -173,9 +173,9 @@ function App() {
       if (timerRef.current) clearInterval(timerRef.current);
       const finalTotalElapsed = Math.round((performance.now() - startTimeRef.current) / 1000);
 
-      // Step 5: Complete
+      // Step 4: Done
       setStage("done");
-      setStageText("Stage 5/5: Matching Complete!");
+      setStageText("Stage 4/4: Matching Complete!");
       setTelemetry((prev) => ({
         ...prev,
         pct: 100,
@@ -250,7 +250,7 @@ function App() {
             TTI Code Matcher
           </h1>
           <p className="text-slate-400 text-sm mt-1">
-            Fuzzy string matching for hotel datasets using Web Workers & Integer Trigram Candidate Blocking.
+            Fuzzy string matching for hotel datasets using Web Worker parallel array splitting.
           </p>
         </div>
 
@@ -258,7 +258,7 @@ function App() {
           <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
           </svg>
-          <span className="font-medium">100% Local Browser Processing (Up to 12GB+ Files)</span>
+          <span className="font-medium">100% Local Browser Processing</span>
         </div>
       </header>
 
@@ -297,7 +297,7 @@ function App() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
                 </svg>
                 <p className="text-xs text-slate-300 font-medium">Select Master File</p>
-                <p className="text-[11px] text-slate-500">Supports files up to 12GB+</p>
+                <p className="text-[11px] text-slate-500">Supports large datasets</p>
               </div>
             )}
           </label>
@@ -393,7 +393,7 @@ function App() {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <span>Processing Stream...</span>
+                <span>Processing...</span>
               </>
             ) : (
               <>
@@ -416,13 +416,11 @@ function App() {
               <div>
                 <h3 className="font-semibold text-slate-100 text-sm">{stageText}</h3>
                 <p className="text-xs text-slate-400">
-                  {stage === "master_parse"
-                    ? "Offloaded 100% to background ingestion Web Worker"
-                    : stage === "matching"
-                    ? `Running on ${telemetry.activeWorkers} parallel Web Workers`
+                  {stage === "matching"
+                    ? `${telemetry.activeWorkers} Web Workers running in parallel`
                     : stage === "done"
                     ? "Execution completed."
-                    : "Processing stream..."}
+                    : "Processing..."}
                 </p>
               </div>
             </div>

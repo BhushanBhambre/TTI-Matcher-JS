@@ -89,10 +89,10 @@
             `${ev.data.prunedCount.toLocaleString()} stop-word trigrams pruned.`
           );
           resolve({
-            ttiCodes: ev.data.ttiCodes,
-            iatas:    ev.data.iatas,
-            blobs:    ev.data.blobs,
-            index:    ev.data.index,
+            ttiCodes:         ev.data.ttiCodes,
+            iatas:            ev.data.iatas,
+            masterGramCounts: ev.data.masterGramCounts,
+            index:            ev.data.index,
           });
 
         } else if (type === "ERROR") {
@@ -256,10 +256,10 @@
         // Send master data to worker (shared reference – structured clone happens once per worker)
         wk.postMessage({
           type: "INIT",
-          ttiCodes: masterData.ttiCodes,
-          iatas:    masterData.iatas,
-          blobs:    masterData.blobs,
-          index:    masterData.index,
+          ttiCodes:         masterData.ttiCodes,
+          iatas:            masterData.iatas,
+          masterGramCounts: masterData.masterGramCounts,
+          index:            masterData.index,
         });
       }
 

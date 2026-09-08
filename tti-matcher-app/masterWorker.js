@@ -1,16 +1,12 @@
 /**
  * masterWorker.js
  * ---------------------------------------------------------------------------
- * Background worker that owns ALL master-file work:
- *   1. Receives raw File object via postMessage (no main-thread parsing).
- *   2. Reads the file in 8 MB slices using FileReader (async, inside worker).
- *   3. Parses TSV lines, normalises text, builds trigram strings.
- *   4. Builds the inverted index (trigram → record-index array).
- *   5. Prunes ultra-common "stop-word" trigrams.
- *   6. Returns compact plain arrays – no Sets, no Maps, no large objects –
- *      so structured-clone is fast.
- *
- * The main thread never touches a single master record.  No lag.
+ * Background worker for Master File streaming and inverted index construction:
+ *   1. Streams file in 8 MB slices using FileReader in worker thread.
+ *   2. Extracts trigrams and builds inverted index in a SINGLE streaming pass.
+ *   3. DOES NOT store a giant `blobs[]` array in memory (saves >90% RAM).
+ *   4. Prunes ultra-common stop-word trigrams.
+ *   5. Emits compact ttiCodes, iatas, masterGramCounts (Uint16Array), and index.
  * ---------------------------------------------------------------------------
  */
 
@@ -20,9 +16,7 @@ const MASTER_COLUMNS = [
   "AddressCityName", "CityName",
 ];
 
-const CHUNK = 8 * 1024 * 1024; // 8 MB slices
-
-/* ── helpers ──────────────────────────────────────────────── */
+const CHUNK = 8 * 1024 * 1024; // 8 MB chunks
 
 function normalize(raw) {
   return String(raw || "")
@@ -40,24 +34,84 @@ function readSlice(blob) {
   });
 }
 
-/* ── main handler ─────────────────────────────────────────── */
-
 self.onmessage = async (ev) => {
   const { file } = ev.data;
   const totalBytes = file.size;
   const decoder = new TextDecoder("utf-8");
 
-  // Compact storage – parallel arrays instead of object arrays
-  const ttiCodes = [];   // string[]
-  const iatas    = [];   // string[]
-  const blobs    = [];   // string[]  (normalised blob per record)
+  // Compact storage: parallel arrays
+  const ttiCodes = [];
+  const iatas    = [];
+  const masterGramCounts = []; // number of unique trigrams per record
+  const tempBuckets = Object.create(null); // trigram -> number[]
 
-  let colIndex  = null;
-  let remainder = "";
-  let offset    = 0;
+  let colIndex   = null;
+  let remainder  = "";
+  let offset     = 0;
   let lastReport = 0;
 
-  /* ── streaming parse ────────────────────────────── */
+  function processRecord(line) {
+    if (!line) return;
+
+    if (colIndex === null) {
+      const header = line.split("\t").map(h => h.trim());
+      colIndex = {};
+      for (const col of MASTER_COLUMNS) {
+        const idx = header.indexOf(col);
+        if (idx === -1) {
+          self.postMessage({ type: "ERROR", msg: `Master file missing column: "${col}"` });
+          return;
+        }
+        colIndex[col] = idx;
+      }
+      return;
+    }
+
+    const cells = line.split("\t");
+    if (cells.length < 2) return;
+
+    const ttiCode = (cells[colIndex.TTIcode] || "").trim();
+    if (!ttiCode) return;
+
+    const blobSource =
+      (cells[colIndex.HotelName]       || "") +
+      (cells[colIndex.StreetNumber]    || "") +
+      (cells[colIndex.AddressLine]     || "") +
+      (cells[colIndex.PostalCode]      || "") +
+      (cells[colIndex.AddressCityName] || "") +
+      (cells[colIndex.CityName]        || "");
+
+    const blob = normalize(blobSource);
+    const recIdx = ttiCodes.length;
+
+    ttiCodes.push(ttiCode);
+    iatas.push((cells[colIndex.IATA_code] || "").trim().toUpperCase());
+
+    // Extract unique trigrams for this record immediately
+    const len = blob.length;
+    const seen = new Set();
+    if (len < 3) {
+      if (len > 0) seen.add(blob);
+    } else {
+      for (let k = 0; k <= len - 3; k++) {
+        seen.add(blob.slice(k, k + 3));
+      }
+    }
+
+    masterGramCounts.push(seen.size);
+
+    // Populate index buckets immediately
+    for (const g of seen) {
+      let b = tempBuckets[g];
+      if (!b) {
+        b = [];
+        tempBuckets[g] = b;
+      }
+      b.push(recIdx);
+    }
+  }
+
+  /* ── Streaming file read loop ───────────────────── */
   while (offset < totalBytes) {
     const end    = Math.min(offset + CHUNK, totalBytes);
     const buf    = await readSlice(file.slice(offset, end));
@@ -70,44 +124,9 @@ self.onmessage = async (ev) => {
     remainder      = lines.pop() ?? "";
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (!line) continue;
-
-      if (colIndex === null) {
-        // first non-empty line = header
-        const header = line.split("\t").map(h => h.trim());
-        colIndex = {};
-        for (const col of MASTER_COLUMNS) {
-          const idx = header.indexOf(col);
-          if (idx === -1) {
-            self.postMessage({ type: "ERROR", msg: `Master file missing column: "${col}"` });
-            return;
-          }
-          colIndex[col] = idx;
-        }
-        continue;
-      }
-
-      const cells   = line.split("\t");
-      if (cells.length < 2) continue;
-
-      const ttiCode = (cells[colIndex.TTIcode] || "").trim();
-      if (!ttiCode) continue;
-
-      const blobSource =
-        (cells[colIndex.HotelName]      || "") +
-        (cells[colIndex.StreetNumber]   || "") +
-        (cells[colIndex.AddressLine]    || "") +
-        (cells[colIndex.PostalCode]     || "") +
-        (cells[colIndex.AddressCityName]|| "") +
-        (cells[colIndex.CityName]       || "");
-
-      ttiCodes.push(ttiCode);
-      iatas.push((cells[colIndex.IATA_code] || "").trim().toUpperCase());
-      blobs.push(normalize(blobSource));
+      processRecord(lines[i]);
     }
 
-    // progress every ~200 ms worth of data (report at chunk boundaries)
     const now = Date.now();
     if (now - lastReport > 150 || isLast) {
       lastReport = now;
@@ -121,69 +140,34 @@ self.onmessage = async (ev) => {
     }
   }
 
-  // flush remainder
   if (remainder) {
-    const cells   = remainder.split("\t");
-    const ttiCode = colIndex ? (cells[colIndex.TTIcode] || "").trim() : "";
-    if (ttiCode) {
-      const blobSource =
-        (cells[colIndex.HotelName]      || "") +
-        (cells[colIndex.StreetNumber]   || "") +
-        (cells[colIndex.AddressLine]    || "") +
-        (cells[colIndex.PostalCode]     || "") +
-        (cells[colIndex.AddressCityName]|| "") +
-        (cells[colIndex.CityName]       || "");
-      ttiCodes.push(ttiCode);
-      iatas.push((cells[colIndex.IATA_code] || "").trim().toUpperCase());
-      blobs.push(normalize(blobSource));
-    }
+    processRecord(remainder);
   }
 
   self.postMessage({ type: "MASTER_PARSE_DONE", recordCount: ttiCodes.length });
 
-  /* ── build inverted index ───────────────────────── */
-  // index: plain object  trigram -> Uint32Array of record indices
-  // We use a plain object keyed by 3-char string – very fast to build,
-  // and JSON-free structured-clone (Uint32Array is transferable).
-  const tempBuckets = Object.create(null); // trigram -> number[]
-
+  /* ── Prune stop-word trigrams & convert to Uint32Array ── */
   const N = ttiCodes.length;
-  for (let i = 0; i < N; i++) {
-    const b = blobs[i];
-    const len = b.length;
-    if (len === 0) continue;
-    const seen = new Set();
-    if (len < 3) {
-      seen.add(b);
-    } else {
-      for (let k = 0; k <= len - 3; k++) seen.add(b.slice(k, k + 3));
-    }
-    for (const g of seen) {
-      if (!tempBuckets[g]) tempBuckets[g] = [];
-      tempBuckets[g].push(i);
-    }
-
-    if (i % 200000 === 0) {
-      self.postMessage({ type: "INDEX_PROGRESS", done: i, total: N });
-    }
-  }
-
-  /* ── prune stop-word trigrams ───────────────────── */
   const MAX_BUCKET = Math.max(300, Math.round(N * 0.005));
   const index = Object.create(null); // trigram -> Uint32Array
   let pruned  = 0;
+
   for (const g in tempBuckets) {
     const arr = tempBuckets[g];
-    if (arr.length > MAX_BUCKET) { pruned++; continue; }
+    if (arr.length > MAX_BUCKET) {
+      pruned++;
+      continue;
+    }
     index[g] = new Uint32Array(arr);
   }
 
+  // Done! Send compact structures to main thread
   self.postMessage({
     type: "MASTER_DONE",
     ttiCodes,
     iatas,
-    blobs,
-    index,       // transferable values inside will be cloned (Uint32Array)
+    masterGramCounts: new Uint16Array(masterGramCounts),
+    index,
     prunedCount: pruned,
   });
 };

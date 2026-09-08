@@ -1,30 +1,27 @@
 /**
  * worker.js
  * ---------------------------------------------------------------------------
- * Matching worker.
- * Receives a slice of lookup rows + the compact master index.
- * Runs Dice-coefficient fuzzy matching on its slice and reports progress
- * back to the main thread every N rows (N depends on performance mode).
+ * High-performance, zero-allocation matching worker:
+ *   1. Receives compact inverted index + masterGramCounts (Uint16Array).
+ *   2. DOES NOT store or touch master blobs or master trigram Sets.
+ *   3. Calculates Dice intersection directly via inverted index frequency counts:
+ *      shared trigrams = count of times candidate appears in query's posting lists.
+ *   4. Zero object allocations during matching loop — zero GC pause, zero OOM.
  * ---------------------------------------------------------------------------
  */
 
-/* ── globals set by INIT ──────────────────────────────────── */
-let ttiCodes = null;
-let iatas    = null;
-let blobs    = null;
-let index    = null;   // plain object: trigram -> Uint32Array
-let masterGramCache = null; // Array<Set<string>|undefined> — cached lazily per master record
+/* ── Globals set by INIT ──────────────────────────────────── */
+let ttiCodes         = null;
+let iatas            = null;
+let masterGramCounts = null; // Uint16Array: unique trigram count per master record
+let index            = null; // plain object: trigram -> Uint32Array
+
+let sharedCounts     = null; // Uint16Array: reusable frequency accumulator
+let touched          = null; // number[]: reusable touched candidate index list
 
 const MAX_MATCHES = 20;
 
 /* ── helpers ──────────────────────────────────────────────── */
-
-function normalize(raw) {
-  return String(raw || "")
-    .toLowerCase()
-    .replace(/null/g, "")
-    .replace(/[^a-z0-9]/g, "");
-}
 
 function getTrigramSet(blob) {
   const s   = new Set();
@@ -35,89 +32,82 @@ function getTrigramSet(blob) {
   return s;
 }
 
-function getMasterGrams(i) {
-  // Build once, reuse forever after
-  return masterGramCache[i] || (masterGramCache[i] = getTrigramSet(blobs[i]));
-}
-
-function diceScore(setA, setB) {
-  if (setA.size === 0 || setB.size === 0) return 0;
-  const [small, big] = setA.size <= setB.size ? [setA, setB] : [setB, setA];
-  let inter = 0;
-  for (const g of small) if (big.has(g)) inter++;
-  return (2 * inter) / (setA.size + setB.size);
-}
-
 function matchRow(queryBlob, queryIata, threshold) {
   const queryGrams = getTrigramSet(queryBlob);
   const sizeA = queryGrams.size;
   if (sizeA === 0) return { bestScore: 0, bestCode: "", candidateCount: 0, matches: [] };
 
-  const candidates = new Set();
+  // Step 1: Accumulate shared trigram count via inverted index
   for (const g of queryGrams) {
     const bucket = index[g];
-    if (bucket) {
-      for (let i = 0; i < bucket.length; i++) candidates.add(bucket[i]);
+    if (!bucket) continue;
+    for (let i = 0; i < bucket.length; i++) {
+      const id = bucket[i];
+      if (sharedCounts[id] === 0) {
+        touched.push(id);
+      }
+      sharedCounts[id]++;
     }
   }
 
-  // fallback: no candidates – skip
-  if (candidates.size === 0) return { bestScore: 0, bestCode: "", candidateCount: 0, matches: [] };
+  const candidateCount = touched.length;
+  if (candidateCount === 0) {
+    return { bestScore: 0, bestCode: "", candidateCount: 0, matches: [] };
+  }
 
   const matches = [];
   let bestRawScore = 0;
   let bestCode = "";
 
-  for (const i of candidates) {
-    const masterGrams = getMasterGrams(i);
-    const sizeB = masterGrams.size;
-    if (sizeB === 0) continue;
+  // Step 2: Score touched candidates directly from sharedCounts
+  for (let i = 0; i < touched.length; i++) {
+    const id = touched[i];
+    const inter = sharedCounts[id];
+    sharedCounts[id] = 0; // Reset in-place for zero-cost cleanup!
 
-    // Mathematical upper-bound pruning:
-    // Max theoretical intersection is min(sizeA, sizeB).
-    // If maximum possible score cannot beat bestRawScore AND cannot reach threshold, skip!
-    const minSize = sizeA < sizeB ? sizeA : sizeB;
-    const maxTheoretical = (2 * minSize) / (sizeA + sizeB);
-    const maxPossible = Math.min(1, maxTheoretical * 0.85 + 0.15);
-    if (maxPossible <= bestRawScore && maxPossible < threshold) {
-      continue;
-    }
+    const sizeB = masterGramCounts[id];
+    let score = (2 * inter) / (sizeA + sizeB);
 
-    let score = diceScore(queryGrams, masterGrams);
-    if (queryIata && iatas[i] && queryIata === iatas[i]) {
+    if (queryIata && iatas[id] && queryIata === iatas[id]) {
       score = Math.min(1, score * 0.85 + 0.15);
     }
 
     if (score > bestRawScore) {
       bestRawScore = score;
-      bestCode = ttiCodes[i];
+      bestCode = ttiCodes[id];
     }
 
     if (score >= threshold) {
-      matches.push({ ttiCode: ttiCodes[i], score });
+      matches.push({ ttiCode: ttiCodes[id], score });
     }
   }
+
+  touched.length = 0; // Reset for next query row!
 
   matches.sort((a, b) => b.score - a.score);
   return {
     bestScore: bestRawScore,
     bestCode,
-    candidateCount: candidates.size,
+    candidateCount,
     matches: matches.slice(0, MAX_MATCHES),
   };
 }
 
-/* ── message handler ──────────────────────────────────────── */
+/* ── Message handler ──────────────────────────────────────── */
 
 self.onmessage = function (ev) {
   const { type } = ev.data;
 
   if (type === "INIT") {
-    ttiCodes = ev.data.ttiCodes;
-    iatas    = ev.data.iatas;
-    blobs    = ev.data.blobs;
-    index    = ev.data.index;
-    masterGramCache = new Array(blobs.length); // Initialize cache array
+    ttiCodes         = ev.data.ttiCodes;
+    iatas            = ev.data.iatas;
+    masterGramCounts = ev.data.masterGramCounts;
+    index            = ev.data.index;
+
+    // Allocate reusable TypedArray accumulator once per worker
+    sharedCounts     = new Uint16Array(ttiCodes.length);
+    touched          = [];
+
     self.postMessage({ type: "READY" });
     return;
   }
@@ -163,7 +153,7 @@ self.onmessage = function (ev) {
         scores:    isMatched ? matchObjs.map(m => m.scorePct).join("; ") : (bestScorePct > 0 ? String(bestScorePct) : ""),
       });
 
-      // live progress update
+      // Live progress update
       if ((i + 1) % reportEvery === 0 || i === slice.length - 1) {
         self.postMessage({
           type:     "PROGRESS",

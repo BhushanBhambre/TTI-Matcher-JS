@@ -47,9 +47,9 @@
     const cores = navigator.hardwareConcurrency || 4;
     switch (mode) {
       case "speed":
-        return { numWorkers: Math.min(cores, 16), reportEvery: 200 };
+        return { numWorkers: Math.min(cores, 16),          reportEvery: 200 };
       case "performance":
-        return { numWorkers: Math.max(1, Math.min(2, cores)), reportEvery: 25 };
+        return { numWorkers: Math.max(1, Math.min(2, cores)), reportEvery: 25  };
       default: // balanced
         return { numWorkers: Math.max(1, Math.min(Math.ceil(cores / 2), 8)), reportEvery: 75 };
     }
@@ -85,7 +85,7 @@
         } else if (type === "MASTER_DONE") {
           w.terminate();
           if (onLog) onLog(
-            `Index ready: ${ev.data.ttiCodes.length.toLocaleString()} records, ` +
+            `Index ready. ${ev.data.ttiCodes.length.toLocaleString()} records, ` +
             `${ev.data.prunedCount.toLocaleString()} stop-word trigrams pruned.`
           );
           resolve({
@@ -122,9 +122,7 @@
           if (!line.trim()) continue;
           if (firstLine) {
             firstLine = false;
-            // Handle BOM
-            const cleanHeader = line.charCodeAt(0) === 0xFEFF ? line.slice(1) : line;
-            header = cleanHeader.split("\t")[0] || cleanHeader;
+            header = line.split("\t")[0] || line;
             continue;
           }
           lineIndex++;
@@ -134,7 +132,7 @@
 
           const pipe    = rawCell.lastIndexOf("|");
           const body    = pipe === -1 ? rawCell : rawCell.slice(0, pipe);
-          const iata    = stripQuotes(pipe === -1 ? "" : rawCell.slice(pipe + 1)).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+          const iata    = (pipe === -1 ? "" : rawCell.slice(pipe + 1)).trim().toUpperCase();
 
           rows.push({
             rowIndex: lineIndex,
@@ -223,11 +221,6 @@
             wprog[wIdx].matched = ev.data.matched;
             pushProgress();
 
-          } else if (type === "DIAG") {
-            if (onLog) onLog(
-              `[Diag Worker ${wIdx}] Candidates: ${ev.data.candidateCount}, best score: ${(ev.data.bestRawScore * 100).toFixed(1)}% (threshold: ${(ev.data.threshold * 100).toFixed(0)}%)`
-            );
-
           } else if (type === "DONE") {
             wprog[wIdx].done    = ev.data.results.length;
             wprog[wIdx].matched = ev.data.matched;
@@ -253,12 +246,9 @@
           }
         };
 
-        wk.onerror = err => {
-          workers.forEach(o => o.wk.terminate());
-          reject(err);
-        };
+        wk.onerror = err => { workers.forEach(o => o.wk.terminate()); reject(err); };
 
-        // Send master data to worker
+        // Send master data to worker (shared reference – structured clone happens once per worker)
         wk.postMessage({
           type: "INIT",
           ttiCodes: masterData.ttiCodes,
@@ -278,9 +268,7 @@
 
   function generateTxtBlob(header, results) {
     const lines = [`${header}\tTTI code\tMatch %`];
-    for (const r of results) {
-      lines.push(`${r.original}\t${r.ttiCode || ""}\t${r.scorePct}`);
-    }
+    for (const r of results) lines.push(`${r.original}\t${r.ttiCode}\t${r.scorePct}`);
     return new Blob([lines.join("\r\n")], { type: "text/plain;charset=utf-8" });
   }
 

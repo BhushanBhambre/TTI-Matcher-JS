@@ -24,14 +24,6 @@ const CHUNK = 8 * 1024 * 1024; // 8 MB slices
 
 /* ── helpers ──────────────────────────────────────────────── */
 
-function stripQuotes(s) {
-  const t = String(s || "").trim();
-  if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
-    return t.slice(1, -1);
-  }
-  return t;
-}
-
 function normalize(raw) {
   return String(raw || "")
     .toLowerCase()
@@ -82,9 +74,8 @@ self.onmessage = async (ev) => {
       if (!line) continue;
 
       if (colIndex === null) {
-        // Strip BOM if present
-        const cleanLine = line.charCodeAt(0) === 0xFEFF ? line.slice(1) : line;
-        const header = cleanLine.split("\t").map(h => stripQuotes(h).trim());
+        // first non-empty line = header
+        const header = line.split("\t").map(h => h.trim());
         colIndex = {};
         for (const col of MASTER_COLUMNS) {
           const idx = header.indexOf(col);
@@ -100,7 +91,7 @@ self.onmessage = async (ev) => {
       const cells   = line.split("\t");
       if (cells.length < 2) continue;
 
-      const ttiCode = stripQuotes(cells[colIndex.TTIcode] || "").trim();
+      const ttiCode = (cells[colIndex.TTIcode] || "").trim();
       if (!ttiCode) continue;
 
       const blobSource =
@@ -112,11 +103,11 @@ self.onmessage = async (ev) => {
         (cells[colIndex.CityName]       || "");
 
       ttiCodes.push(ttiCode);
-      iatas.push(stripQuotes(cells[colIndex.IATA_code] || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, ""));
+      iatas.push((cells[colIndex.IATA_code] || "").trim().toUpperCase());
       blobs.push(normalize(blobSource));
     }
 
-    // progress every ~150 ms worth of data
+    // progress every ~200 ms worth of data (report at chunk boundaries)
     const now = Date.now();
     if (now - lastReport > 150 || isLast) {
       lastReport = now;
@@ -133,7 +124,7 @@ self.onmessage = async (ev) => {
   // flush remainder
   if (remainder) {
     const cells   = remainder.split("\t");
-    const ttiCode = colIndex ? stripQuotes(cells[colIndex.TTIcode] || "").trim() : "";
+    const ttiCode = colIndex ? (cells[colIndex.TTIcode] || "").trim() : "";
     if (ttiCode) {
       const blobSource =
         (cells[colIndex.HotelName]      || "") +
@@ -143,7 +134,7 @@ self.onmessage = async (ev) => {
         (cells[colIndex.AddressCityName]|| "") +
         (cells[colIndex.CityName]       || "");
       ttiCodes.push(ttiCode);
-      iatas.push(stripQuotes(cells[colIndex.IATA_code] || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, ""));
+      iatas.push((cells[colIndex.IATA_code] || "").trim().toUpperCase());
       blobs.push(normalize(blobSource));
     }
   }
@@ -151,6 +142,9 @@ self.onmessage = async (ev) => {
   self.postMessage({ type: "MASTER_PARSE_DONE", recordCount: ttiCodes.length });
 
   /* ── build inverted index ───────────────────────── */
+  // index: plain object  trigram -> Uint32Array of record indices
+  // We use a plain object keyed by 3-char string – very fast to build,
+  // and JSON-free structured-clone (Uint32Array is transferable).
   const tempBuckets = Object.create(null); // trigram -> number[]
 
   const N = ttiCodes.length;
@@ -169,7 +163,7 @@ self.onmessage = async (ev) => {
       tempBuckets[g].push(i);
     }
 
-    if (i % 200000 === 0 && i > 0) {
+    if (i % 200000 === 0) {
       self.postMessage({ type: "INDEX_PROGRESS", done: i, total: N });
     }
   }
@@ -189,7 +183,7 @@ self.onmessage = async (ev) => {
     ttiCodes,
     iatas,
     blobs,
-    index,
+    index,       // transferable values inside will be cloned (Uint32Array)
     prunedCount: pruned,
   });
 };

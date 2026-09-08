@@ -1,31 +1,37 @@
 /**
  * matcher.js
  * ---------------------------------------------------------------------------
- * Simple, fast, multi-threaded fuzzy matching engine.
- * Streams Master and Lookup files cleanly, builds trigram candidate index,
- * and splits the lookup dataset evenly across background Web Workers.
- * Reports live progress, active worker counts, speed, and ETA to the UI.
+ * Orchestrator – runs entirely on the main thread but does NO heavy work:
+ *   1. Delegates master-file parsing to masterWorker.js (off-thread).
+ *   2. Streams the lookup file in chunks (main thread, but it's I/O-bound,
+ *      not CPU-bound, so it's fine – we yield after each chunk).
+ *   3. Once both are ready, splits the lookup array across N workers
+ *      and fans out MATCH messages.
+ *   4. Aggregates per-worker PROGRESS events and fires onProgress.
+ *
+ * Performance modes
+ * -----------------
+ *   "speed"       – more workers, report every 200 rows  (fastest throughput,
+ *                   may cause slight UI stutter on low-RAM machines)
+ *   "balanced"    – ~half cores, report every 100 rows   (default)
+ *   "performance" – 2 workers, report every 50 rows      (smoothest UI, slower)
  * ---------------------------------------------------------------------------
  */
 
 (function (global) {
-  const MASTER_COLUMNS = [
-    "TTIcode",
-    "HotelName",
-    "IATA_code",
-    "StreetNumber",
-    "AddressLine",
-    "PostalCode",
-    "AddressCityName",
-    "CityName",
+
+  const MASTER_COLS = [
+    "TTIcode","HotelName","IATA_code",
+    "StreetNumber","AddressLine","PostalCode",
+    "AddressCityName","CityName",
   ];
+
+  /* ── helpers ──────────────────────────────────────────── */
 
   function stripQuotes(s) {
     const t = String(s || "").trim();
-    if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
-      return t.slice(1, -1);
-    }
-    return t;
+    return t.length >= 2 && t[0] === '"' && t[t.length-1] === '"'
+      ? t.slice(1, -1) : t;
   }
 
   function normalize(raw) {
@@ -35,323 +41,243 @@
       .replace(/[^a-z0-9]/g, "");
   }
 
-  function trigrams(blob) {
-    const grams = new Set();
-    if (blob.length < 3) {
-      if (blob.length > 0) grams.add(blob);
-      return grams;
+  /* ── mode config ─────────────────────────────────────── */
+
+  function modeConfig(mode) {
+    const cores = navigator.hardwareConcurrency || 4;
+    switch (mode) {
+      case "speed":
+        return { numWorkers: Math.min(cores, 16),          reportEvery: 200 };
+      case "performance":
+        return { numWorkers: Math.max(1, Math.min(2, cores)), reportEvery: 25  };
+      default: // balanced
+        return { numWorkers: Math.max(1, Math.min(Math.ceil(cores / 2), 8)), reportEvery: 75 };
     }
-    for (let i = 0; i <= blob.length - 3; i++) {
-      grams.add(blob.slice(i, i + 3));
-    }
-    return Array.from(grams);
   }
 
-  /**
-   * Stream parse Master File cleanly.
-   */
-  async function streamParseMasterFile(file, onProgress, onLog) {
-    if (onLog) onLog(`Reading Master File: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+  /* ── step 1: parse master in background worker ───────── */
 
-    const records = [];
-    let header = null;
-    let colIndex = {};
-    let isFirstLine = true;
+  function parseMasterInWorker(file, onProgress, onLog) {
+    return new Promise((resolve, reject) => {
+      if (onLog) onLog(`Reading master file: ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…`);
 
-    await global.streamReader.streamFile(file, {
-      onChunk: async (lines, bytesRead, totalBytes) => {
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line || !line.trim()) continue;
+      const w = new Worker("masterWorker.js");
 
-          if (isFirstLine) {
-            isFirstLine = false;
-            header = line.split("\t").map((h) => h.trim());
-            for (let c = 0; c < MASTER_COLUMNS.length; c++) {
-              const col = MASTER_COLUMNS[c];
-              const idx = header.indexOf(col);
-              if (idx === -1) {
-                throw new Error(`Master file missing required column: "${col}"`);
-              }
-              colIndex[col] = idx;
-            }
-            continue;
-          }
+      w.onmessage = ev => {
+        const { type } = ev.data;
 
-          const cells = line.split("\t");
-          if (cells.length < 2) continue;
-
-          const ttiCode = (cells[colIndex.TTIcode] || "").trim();
-          if (!ttiCode) continue;
-
-          const blobSource =
-            (cells[colIndex.HotelName] || "") +
-            (cells[colIndex.StreetNumber] || "") +
-            (cells[colIndex.AddressLine] || "") +
-            (cells[colIndex.PostalCode] || "") +
-            (cells[colIndex.AddressCityName] || "") +
-            (cells[colIndex.CityName] || "");
-
-          records.push({
-            ttiCode,
-            iata: (cells[colIndex.IATA_code] || "").trim().toUpperCase(),
-            blob: normalize(blobSource),
+        if (type === "MASTER_PROGRESS") {
+          if (onProgress) onProgress({
+            phase: "master", pct: ev.data.pct,
+            recordCount: ev.data.recordCount,
+            bytesRead: ev.data.bytesRead, totalBytes: ev.data.totalBytes,
           });
-        }
 
-        if (onProgress) {
-          onProgress({
-            stage: "master_parse",
-            bytesRead,
-            totalBytes,
-            recordCount: records.length,
-            pct: Math.round((bytesRead / totalBytes) * 100),
+        } else if (type === "MASTER_PARSE_DONE") {
+          if (onLog) onLog(`Master parse done: ${ev.data.recordCount.toLocaleString()} records. Building index…`);
+
+        } else if (type === "INDEX_PROGRESS") {
+          if (onProgress) onProgress({
+            phase: "index",
+            pct: Math.round((ev.data.done / ev.data.total) * 100),
           });
+
+        } else if (type === "MASTER_DONE") {
+          w.terminate();
+          if (onLog) onLog(
+            `Index ready. ${ev.data.ttiCodes.length.toLocaleString()} records, ` +
+            `${ev.data.prunedCount.toLocaleString()} stop-word trigrams pruned.`
+          );
+          resolve({
+            ttiCodes: ev.data.ttiCodes,
+            iatas:    ev.data.iatas,
+            blobs:    ev.data.blobs,
+            index:    ev.data.index,
+          });
+
+        } else if (type === "ERROR") {
+          w.terminate();
+          reject(new Error(ev.data.msg));
         }
-      },
+      };
+
+      w.onerror = err => { w.terminate(); reject(err); };
+      w.postMessage({ file });
     });
-
-    if (onLog) onLog(`Master File parsed: ${records.length.toLocaleString()} valid hotel records.`);
-    if (onLog) onLog("Building inverted trigram index...");
-
-    // Build Inverted Index Map: trigram -> list of record indices
-    const indexMap = new Map();
-    for (let i = 0; i < records.length; i++) {
-      const grams = trigrams(records[i].blob);
-      for (let j = 0; j < grams.length; j++) {
-        const g = grams[j];
-        let bucket = indexMap.get(g);
-        if (!bucket) {
-          bucket = [];
-          indexMap.set(g, bucket);
-        }
-        bucket.push(i);
-      }
-    }
-
-    // Prune ultra-common stop-word trigrams (>0.5% of records)
-    const MAX_POSTING_LIST = Math.max(300, Math.round(records.length * 0.005));
-    let prunedCount = 0;
-    for (const [gram, bucket] of indexMap) {
-      if (bucket.length > MAX_POSTING_LIST) {
-        indexMap.delete(gram);
-        prunedCount++;
-      }
-    }
-
-    if (onLog) {
-      onLog(`Index built: ${indexMap.size.toLocaleString()} trigrams (${prunedCount.toLocaleString()} stop-words pruned).`);
-    }
-
-    return { records, indexMap };
   }
 
-  /**
-   * Stream parse Lookup File cleanly.
-   */
-  async function streamParseLookupFile(file, onProgress, onLog) {
-    if (onLog) onLog(`Reading Lookup File: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+  /* ── step 2: stream lookup file (main thread, I/O-bound) ─ */
 
-    let header = "Hotel Name and address";
-    const lookupRows = [];
-    let isFirstLine = true;
-    let totalLineIndex = 0;
+  async function parseLookupFile(file, onProgress, onLog) {
+    if (onLog) onLog(`Reading lookup file: ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…`);
+
+    let header     = "Hotel Name and address";
+    const rows     = [];
+    let firstLine  = true;
+    let lineIndex  = 0;
 
     await global.streamReader.streamFile(file, {
       onChunk: async (lines, bytesRead, totalBytes) => {
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line || !line.trim()) continue;
-
-          if (isFirstLine) {
-            isFirstLine = false;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          if (firstLine) {
+            firstLine = false;
             header = line.split("\t")[0] || line;
             continue;
           }
-
-          totalLineIndex++;
-          const cells = line.split("\t");
+          lineIndex++;
+          const cells   = line.split("\t");
           const rawCell = stripQuotes(cells[0] || "");
           if (!rawCell) continue;
 
-          const lastPipe = rawCell.lastIndexOf("|");
-          const bodyText = lastPipe === -1 ? rawCell : rawCell.slice(0, lastPipe);
-          const iata = (lastPipe === -1 ? "" : rawCell.slice(lastPipe + 1)).trim().toUpperCase();
+          const pipe    = rawCell.lastIndexOf("|");
+          const body    = pipe === -1 ? rawCell : rawCell.slice(0, pipe);
+          const iata    = (pipe === -1 ? "" : rawCell.slice(pipe + 1)).trim().toUpperCase();
 
-          lookupRows.push({
-            rowIndex: totalLineIndex,
+          rows.push({
+            rowIndex: lineIndex,
             original: cells[0],
-            blob: normalize(bodyText),
+            blob:     normalize(body),
             iata,
           });
         }
-
-        if (onProgress) {
-          onProgress({
-            stage: "lookup_parse",
-            bytesRead,
-            totalBytes,
-            recordCount: lookupRows.length,
-            pct: Math.round((bytesRead / totalBytes) * 100),
-          });
-        }
+        if (onProgress) onProgress({
+          phase: "lookup",
+          pct: Math.round((bytesRead / totalBytes) * 100),
+          recordCount: rows.length,
+        });
       },
     });
 
-    if (onLog) onLog(`Lookup File parsed: ${lookupRows.length.toLocaleString()} rows to process.`);
-    return { header, lookupRows };
+    if (onLog) onLog(`Lookup parse done: ${rows.length.toLocaleString()} rows.`);
+    return { header, rows };
   }
 
-  /**
-   * Split lookup array across N background Web Workers and report live progress.
-   */
-  async function matchAllParallel(master, lookupRows, thresholdPct, onProgress, onLog) {
-    const totalRows = lookupRows.length;
-    const numWorkers = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 16));
+  /* ── step 3: fan-out matching across workers ─────────── */
 
-    if (onLog) onLog(`Splitting ${totalRows.toLocaleString()} rows across ${numWorkers} Web Workers...`);
-
-    const sliceSize = Math.ceil(totalRows / numWorkers);
-    const indexEntries = Array.from(master.indexMap.entries());
-
-    const workers = [];
-    const workerProgress = new Array(numWorkers);
-    const workerResults = new Array(numWorkers);
-    let completedWorkers = 0;
-
-    for (let w = 0; w < numWorkers; w++) {
-      workerProgress[w] = { done: 0, total: 0, matched: 0, active: true };
-    }
-
-    const startTime = performance.now();
-
+  function matchAll(masterData, lookupRows, thresholdPct, mode, onProgress, onLog) {
     return new Promise((resolve, reject) => {
-      function checkGlobalProgress() {
-        let totalDone = 0;
-        let totalMatched = 0;
-        let activeCount = 0;
+      const { numWorkers, reportEvery } = modeConfig(mode);
+      const total = lookupRows.length;
 
-        for (let w = 0; w < numWorkers; w++) {
-          totalDone += workerProgress[w].done;
-          totalMatched += workerProgress[w].matched;
-          if (workerProgress[w].active) activeCount++;
-        }
+      if (onLog) onLog(
+        `Launching ${numWorkers} workers (mode: ${mode}, reportEvery: ${reportEvery} rows)…`
+      );
 
-        const elapsedSec = (performance.now() - startTime) / 1000;
-        const recPerSec = elapsedSec > 0 ? Math.round(totalDone / elapsedSec) : 0;
-        const remainingRecs = totalRows - totalDone;
-        const etaSec = recPerSec > 0 ? Math.ceil(remainingRecs / recPerSec) : 0;
-        const pct = totalRows > 0 ? Math.round((totalDone / totalRows) * 100) : 0;
+      const sliceSize = Math.ceil(total / numWorkers);
+      const wprog     = []; // per-worker { done, matched, active }
+      const wresults  = [];
+      let completed   = 0;
+      const t0        = performance.now();
 
-        if (onProgress) {
-          onProgress({
-            stage: "matching",
-            done: totalDone,
-            total: totalRows,
-            pct,
-            matchedCount: totalMatched,
-            recPerSec,
-            elapsedSec: Math.round(elapsedSec),
-            etaSec,
-            activeWorkers: activeCount,
-          });
-        }
+      function pushProgress() {
+        let done = 0, matched = 0, active = 0;
+        for (const p of wprog) { done += p.done; matched += p.matched; if (p.active) active++; }
+        const elapsed = (performance.now() - t0) / 1000;
+        const rps     = elapsed > 0.5 ? Math.round(done / elapsed) : 0;
+        const eta     = rps > 0 ? Math.ceil((total - done) / rps) : 0;
+        if (onProgress) onProgress({
+          phase:        "matching",
+          done,
+          total,
+          pct:          total > 0 ? Math.round((done / total) * 100) : 0,
+          matchedCount: matched,
+          recPerSec:    rps,
+          elapsedSec:   Math.round(elapsed),
+          etaSec:       eta,
+          activeWorkers: active,
+          totalWorkers:  numWorkers,
+        });
       }
 
+      const workers = [];
+      let actualWorkers = 0;
+
       for (let w = 0; w < numWorkers; w++) {
-        const sliceStart = w * sliceSize;
-        const sliceEnd = Math.min((w + 1) * sliceSize, totalRows);
-        const lookupSlice = lookupRows.slice(sliceStart, sliceEnd);
+        const start = w * sliceSize;
+        const end   = Math.min(start + sliceSize, total);
+        const slice = lookupRows.slice(start, end);
 
-        workerProgress[w].total = lookupSlice.length;
+        wprog.push({ done: 0, matched: 0, active: slice.length > 0 });
+        wresults.push([]);
 
-        if (lookupSlice.length === 0) {
-          workerProgress[w].active = false;
-          workerResults[w] = [];
-          completedWorkers++;
-          continue;
-        }
+        if (slice.length === 0) { completed++; continue; }
+        actualWorkers++;
 
-        const worker = new Worker("worker.js");
-        workers.push(worker);
+        const wk = new Worker("worker.js");
+        workers.push({ wk, idx: w });
 
-        worker.onmessage = (e) => {
-          const { type, workerId } = e.data;
+        const wIdx = w; // capture
 
-          if (type === "PROGRESS") {
-            workerProgress[workerId].done = e.data.doneInSlice;
-            workerProgress[workerId].matched = e.data.matchedCountInSlice;
-            checkGlobalProgress();
+        wk.onmessage = ev => {
+          const { type } = ev.data;
+
+          if (type === "READY") {
+            // worker initialised – send it its slice
+            wk.postMessage({ type: "MATCH", workerId: wIdx, slice, thresholdPct, reportEvery });
+
+          } else if (type === "PROGRESS") {
+            wprog[wIdx].done    = ev.data.done;
+            wprog[wIdx].matched = ev.data.matched;
+            pushProgress();
+
           } else if (type === "DONE") {
-            workerProgress[workerId].done = e.data.results.length;
-            workerProgress[workerId].matched = e.data.matchedCountInSlice;
-            workerProgress[workerId].active = false;
-            workerResults[workerId] = e.data.results;
-            completedWorkers++;
+            wprog[wIdx].done    = ev.data.results.length;
+            wprog[wIdx].matched = ev.data.matched;
+            wprog[wIdx].active  = false;
+            wresults[wIdx]      = ev.data.results;
+            wk.terminate();
+            completed++;
+            pushProgress();
 
-            checkGlobalProgress();
+            if (completed === numWorkers) {
+              const merged = [];
+              for (const r of wresults) merged.push(...r);
+              merged.sort((a, b) => a.rowIndex - b.rowIndex);
 
-            if (completedWorkers === numWorkers) {
-              workers.forEach((wrk) => wrk.terminate());
-              const finalElapsedSec = ((performance.now() - startTime) / 1000).toFixed(2);
-
-              // Flatten and sort results by original row order
-              const mergedResults = [];
-              for (let i = 0; i < numWorkers; i++) {
-                if (workerResults[i]) {
-                  mergedResults.push(...workerResults[i]);
-                }
-              }
-              mergedResults.sort((a, b) => a.rowIndex - b.rowIndex);
-
-              let totalMatchedCount = 0;
-              for (let r = 0; r < mergedResults.length; r++) {
-                if (mergedResults[r].ttiCode) totalMatchedCount++;
-              }
-
-              if (onLog) {
-                onLog(
-                  `Matching finished in ${finalElapsedSec}s. ${totalMatchedCount.toLocaleString()} / ${mergedResults.length.toLocaleString()} rows matched.`
-                );
-              }
-
-              resolve(mergedResults);
+              const totalMatched = merged.filter(r => r.ttiCode).length;
+              const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+              if (onLog) onLog(
+                `Done in ${elapsed}s — ${totalMatched.toLocaleString()} / ` +
+                `${merged.length.toLocaleString()} rows matched.`
+              );
+              resolve(merged);
             }
           }
         };
 
-        worker.onerror = (err) => {
-          workers.forEach((wrk) => wrk.terminate());
-          reject(err);
-        };
+        wk.onerror = err => { workers.forEach(o => o.wk.terminate()); reject(err); };
 
-        worker.postMessage({
-          type: "START",
-          workerId: w,
-          masterRecordsData: master.records,
-          indexEntries,
-          lookupSlice,
-          thresholdPct: Number(thresholdPct),
+        // Send master data to worker (shared reference – structured clone happens once per worker)
+        wk.postMessage({
+          type: "INIT",
+          ttiCodes: masterData.ttiCodes,
+          iatas:    masterData.iatas,
+          blobs:    masterData.blobs,
+          index:    masterData.index,
         });
       }
 
-      checkGlobalProgress();
+      // Edge case: zero lookup rows
+      if (actualWorkers === 0) resolve([]);
+      pushProgress();
     });
   }
 
+  /* ── export ─────────────────────────────────────────── */
+
   function generateTxtBlob(header, results) {
     const lines = [`${header}\tTTI code\tMatch %`];
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      lines.push(`${r.original}\t${r.ttiCode}\t${r.scorePct}`);
-    }
+    for (const r of results) lines.push(`${r.original}\t${r.ttiCode}\t${r.scorePct}`);
     return new Blob([lines.join("\r\n")], { type: "text/plain;charset=utf-8" });
   }
 
   global.matcherLib = {
-    streamParseMasterFile,
-    streamParseLookupFile,
-    matchAllParallel,
+    parseMasterInWorker,
+    parseLookupFile,
+    matchAll,
     generateTxtBlob,
+    modeConfig,
   };
+
 })(typeof window !== "undefined" ? window : this);

@@ -1,492 +1,543 @@
 /**
- * app.js
- * ---------------------------------------------------------------------------
- * Professional React UI for TTI Code Matcher.
- * Features live worker progress tracking, active worker counts, speed,
- * ETA calculation, and virtualized results table.
- * ---------------------------------------------------------------------------
+ * app.js  –  TTI Code Matcher UI
+ * Full rewrite: proper icons, mode-selection modal, live multi-worker telemetry.
  */
 
 const { useState, useCallback, useRef, useEffect } = React;
 
-function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+/* ─── tiny icon helpers (inline SVG, no external lib) ─────────── */
+function Icon({ d, size = 16, cls = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+      strokeLinejoin="round" className={cls}>
+      <path d={d} />
+    </svg>
+  );
+}
+// named icons
+const I = {
+  db:       "M4 7c0-1.1 3.6-2 8-2s8 .9 8 2v10c0 1.1-3.6 2-8 2s-8-.9-8-2V7z M4 7c0 1.1 3.6 2 8 2s8-.9 8-2 M4 12c0 1.1 3.6 2 8 2s8-.9 8-2",
+  file:     "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
+  sliders:  "M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 16h6",
+  bolt:     "M13 2L3 14h9l-1 8 10-12h-9l1-8z",
+  upload:   "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M17 8l-5-5-5 5 M12 3v12",
+  check:    "M20 6L9 17l-5-5",
+  shield:   "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  clock:    "M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z M12 6v6l4 2",
+  zap:      "M13 2L3 14h9l-1 8 10-12h-9l1-8z",
+  cpu:      "M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18",
+  activity: "M22 12h-4l-3 9L9 3l-3 9H2",
+  download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3",
+  search:   "M11 17.25a6.25 6.25 0 1 1 0-12.5 6.25 6.25 0 0 1 0 12.5z M16 16l4.5 4.5",
+  terminal: "M4 17l6-6-6-6 M12 19h8",
+  x:        "M18 6L6 18 M6 6l12 12",
+  workers:  "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M23 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75",
+  gauge:    "M12 2a10 10 0 0 1 7.38 16.75 M12 2a10 10 0 0 0-7.38 16.75 M12 8v4l3 3",
+};
+
+/* ─── format helpers ────────────────────────────────────────────── */
+function fmtBytes(b) {
+  if (!b) return "0 B";
+  const k = 1024, s = ["B","KB","MB","GB"];
+  const i = Math.floor(Math.log(b) / Math.log(k));
+  return (b / Math.pow(k, i)).toFixed(1) + " " + s[i];
+}
+function fmtSec(s) {
+  if (!s || isNaN(s) || s < 0) return "--:--";
+  s = Math.floor(s);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  if (h > 0) return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(ss).padStart(2,"0")}`;
+  return `${String(m).padStart(2,"0")}:${String(ss).padStart(2,"0")}`;
+}
+function fmtNum(n) { return (n || 0).toLocaleString(); }
+
+/* ─── MODE CONFIG (display only – matcher.js has the real config) ── */
+const MODES = {
+  speed: {
+    label:    "High Speed",
+    sub:      "All CPU cores, may cause UI lag",
+    icon:     I.zap,
+    iconCls:  "text-amber-400",
+    tagCls:   "bg-amber-950 text-amber-400 border-amber-800",
+    tag:      "Max Throughput",
+  },
+  balanced: {
+    label:    "Balanced",
+    sub:      "Half cores, smooth & fast",
+    icon:     I.gauge,
+    iconCls:  "text-indigo-400",
+    tagCls:   "bg-indigo-950 text-indigo-400 border-indigo-800",
+    tag:      "Recommended",
+  },
+  performance: {
+    label:    "Low Impact",
+    sub:      "2 workers, UI stays 60 FPS",
+    icon:     I.activity,
+    iconCls:  "text-emerald-400",
+    tagCls:   "bg-emerald-950 text-emerald-400 border-emerald-800",
+    tag:      "Smooth UI",
+  },
+};
+
+/* ─── mode selection modal ─────────────────────────────────────── */
+function ModeModal({ onSelect, onClose }) {
+  const [chosen, setChosen] = useState("balanced");
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-box" onClick={e => e.stopPropagation()}>
+        {/* header */}
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-100">Select Processing Mode</h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Choose how to balance speed vs. UI responsiveness.
+            </p>
+          </div>
+          <button onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors">
+            <Icon d={I.x} size={16} />
+          </button>
+        </div>
+
+        {/* mode cards */}
+        <div className="flex flex-col gap-3 mb-6">
+          {Object.entries(MODES).map(([key, m]) => (
+            <button key={key}
+              onClick={() => setChosen(key)}
+              className={`mode-card w-full text-left ${chosen === key ? "selected" : ""}`}>
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg bg-slate-900 ${m.iconCls}`}>
+                  <Icon d={m.icon} size={18} />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-100">{m.label}</span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${m.tagCls}`}>
+                      {m.tag}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">{m.sub}</p>
+                </div>
+                <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center
+                  ${chosen === key ? "border-indigo-500" : "border-slate-600"}`}>
+                  {chosen === key && <div className="w-2 h-2 rounded-full bg-indigo-500" />}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={onClose}
+            className="flex-1 py-2.5 rounded-lg border border-slate-700 text-slate-300
+              text-sm font-medium hover:bg-slate-800 transition-colors">
+            Cancel
+          </button>
+          <button onClick={() => onSelect(chosen)}
+            className="btn-primary flex-1 justify-center py-2.5">
+            <Icon d={I.bolt} size={15} />
+            Start Matching
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function formatSeconds(sec) {
-  if (!sec || isNaN(sec) || sec < 0) return "00:00";
-  const totalSec = Math.floor(sec);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = Math.floor(totalSec % 60);
-  if (h > 0) {
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+/* ─── stat tile ─────────────────────────────────────────────────── */
+function Stat({ label, value, sub, iconD, iconCls = "text-slate-400" }) {
+  return (
+    <div className="card-inner p-4 rounded-lg">
+      <div className="flex items-center gap-2 mb-2">
+        <span className={iconCls}><Icon d={iconD} size={14} /></span>
+        <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">{label}</span>
+      </div>
+      <p className="text-xl font-bold font-mono text-slate-100">{value}</p>
+      {sub && <p className="text-[11px] text-slate-500 mt-0.5">{sub}</p>}
+    </div>
+  );
 }
 
+/* ─── file drop zone ────────────────────────────────────────────── */
+function DropZone({ label, hint, accept, file, onChange, iconD }) {
+  return (
+    <label className={`dropzone block ${file ? "filled" : ""}`}>
+      <input type="file" accept={accept} className="hidden"
+        onChange={e => onChange(e.target.files[0] || null)} />
+      <div className="flex flex-col items-center gap-2 py-1">
+        <span className={file ? "text-indigo-400" : "text-slate-500"}>
+          <Icon d={file ? I.check : iconD} size={22} />
+        </span>
+        {file ? (
+          <>
+            <p className="text-xs font-semibold text-indigo-300 truncate max-w-[160px]">{file.name}</p>
+            <p className="text-[11px] text-slate-400">{fmtBytes(file.size)}</p>
+            <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950 px-2 py-0.5
+              rounded border border-emerald-800 uppercase">Selected</span>
+          </>
+        ) : (
+          <>
+            <p className="text-xs font-medium text-slate-300">{label}</p>
+            <p className="text-[11px] text-slate-500">{hint}</p>
+          </>
+        )}
+      </div>
+    </label>
+  );
+}
+
+/* ─── main app ──────────────────────────────────────────────────── */
 function App() {
-  const [masterFile, setMasterFile] = useState(null);
-  const [lookupFile, setLookupFile] = useState(null);
-  const [threshold, setThreshold] = useState(70);
+  const [masterFile, setMasterFile]   = useState(null);
+  const [lookupFile, setLookupFile]   = useState(null);
+  const [threshold,  setThreshold]    = useState(70);
+  const [showModal,  setShowModal]    = useState(false);
 
-  const [processing, setProcessing] = useState(false);
-  const [stage, setStage] = useState("idle"); // idle, master_parse, indexing, lookup_parse, matching, done, error
-  const [stageText, setStageText] = useState("Ready");
+  const [processing, setProcessing]   = useState(false);
+  const [stageLabel, setStageLabel]   = useState("Ready");
+  const [stageNote,  setStageNote]    = useState("");
+  const [errorMsg,   setErrorMsg]     = useState("");
 
-  const [telemetry, setTelemetry] = useState({
-    done: 0,
-    total: 0,
-    pct: 0,
-    matchedCount: 0,
-    recPerSec: 0,
-    elapsedSec: 0,
-    etaSec: 0,
-    activeWorkers: 0,
+  const [tel, setTel] = useState({
+    pct: 0, done: 0, total: 0,
+    matchedCount: 0, recPerSec: 0,
+    elapsedSec: 0, etaSec: 0,
+    activeWorkers: 0, totalWorkers: 0,
   });
 
-  const [logs, setLogs] = useState([]);
+  const [logs,    setLogs]    = useState([]);
   const [results, setResults] = useState(null);
-  const [lookupHeader, setLookupHeader] = useState("Hotel Name and address");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [filterMode, setFilterMode] = useState("all");
+  const [header,  setHeader]  = useState("Hotel Name and address");
+  const [search,  setSearch]  = useState("");
+  const [filter,  setFilter]  = useState("all");
+  const [mode,    setMode]    = useState("balanced");
 
-  const logEndRef = useRef(null);
-  const timerRef = useRef(null);
-  const startTimeRef = useRef(0);
+  const logEndRef   = useRef(null);
+  const timerRef    = useRef(null);
+  const t0Ref       = useRef(0);
 
-  const addLog = useCallback((msg) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setLogs((prev) => [...prev, `[${timestamp}] ${msg}`]);
-  }, []);
-
+  // auto-scroll log
   useEffect(() => {
-    if (logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+  // cleanup timer
+  useEffect(() => () => clearInterval(timerRef.current), []);
+
+  const log = useCallback(msg => {
+    const ts = new Date().toLocaleTimeString();
+    setLogs(p => [...p, `[${ts}] ${msg}`]);
   }, []);
 
   const canProcess = masterFile && lookupFile && !processing;
 
-  const handleProcess = useCallback(async () => {
-    if (!masterFile || !lookupFile) return;
-
+  /* ── run matching ─────────────────────────────────────────────── */
+  async function runWithMode(selectedMode) {
+    setShowModal(false);
+    setMode(selectedMode);
     setProcessing(true);
     setErrorMsg("");
     setResults(null);
     setLogs([]);
-    setStage("master_parse");
-    setStageText("Stage 1/4: Parsing & Indexing Master File...");
+    t0Ref.current = performance.now();
 
-    startTimeRef.current = performance.now();
-    setTelemetry({
-      done: 0,
-      total: 0,
-      pct: 0,
-      matchedCount: 0,
-      recPerSec: 0,
-      elapsedSec: 0,
-      etaSec: 0,
-      activeWorkers: 0,
-    });
+    // reset telemetry
+    setTel({ pct: 0, done: 0, total: 0, matchedCount: 0,
+      recPerSec: 0, elapsedSec: 0, etaSec: 0, activeWorkers: 0, totalWorkers: 0 });
 
-    if (timerRef.current) clearInterval(timerRef.current);
+    // live elapsed ticker
+    clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
-      const currentElapsed = Math.round((performance.now() - startTimeRef.current) / 1000);
-      setTelemetry((prev) => ({ ...prev, elapsedSec: currentElapsed }));
+      setTel(p => ({ ...p, elapsedSec: Math.round((performance.now() - t0Ref.current) / 1000) }));
     }, 500);
 
-    addLog("=== Starting Fuzzy Matching Engine ===");
-    addLog(`Master File: ${masterFile.name} (${formatBytes(masterFile.size)})`);
-    addLog(`Lookup File: ${lookupFile.name} (${formatBytes(lookupFile.size)})`);
-    addLog(`Match Threshold: ${threshold}%`);
+    log("=== TTI Fuzzy Matching Engine started ===");
+    log(`Master: ${masterFile.name} (${fmtBytes(masterFile.size)})`);
+    log(`Lookup: ${lookupFile.name} (${fmtBytes(lookupFile.size)})`);
+    log(`Threshold: ${threshold}%   Mode: ${MODES[selectedMode].label}`);
 
     try {
-      // Step 1: Parse Master File
-      const masterData = await matcherLib.streamParseMasterFile(
+      /* 1 – parse master in background */
+      setStageLabel("Step 1 / 3 — Reading & indexing master file…");
+      setStageNote("Running in background — UI stays responsive");
+
+      const masterData = await matcherLib.parseMasterInWorker(
         masterFile,
-        (progress) => {
-          setTelemetry((prev) => ({
-            ...prev,
-            done: progress.recordCount,
-            total: progress.recordCount,
-            pct: progress.pct,
-          }));
+        p => {
+          if (p.phase === "master") {
+            setStageLabel("Step 1 / 3 — Streaming master file…");
+            setTel(prev => ({ ...prev, pct: Math.round(p.pct * 0.5), done: p.recordCount }));
+          } else if (p.phase === "index") {
+            setStageLabel("Step 1 / 3 — Building trigram index…");
+            setTel(prev => ({ ...prev, pct: 50 + Math.round(p.pct * 0.1) }));
+          }
         },
-        addLog
+        log
       );
 
-      // Step 2: Parse Lookup File
-      setStage("lookup_parse");
-      setStageText("Stage 2/4: Parsing Lookup File...");
+      /* 2 – parse lookup on main thread (I/O only, no CPU) */
+      setStageLabel("Step 2 / 3 — Reading lookup file…");
+      setStageNote("Streaming from disk");
 
-      const lookupData = await matcherLib.streamParseLookupFile(
+      const lookupData = await matcherLib.parseLookupFile(
         lookupFile,
-        (progress) => {
-          setTelemetry((prev) => ({
-            ...prev,
-            done: progress.recordCount,
-            total: progress.recordCount,
-            pct: progress.pct,
-          }));
-        },
-        addLog
+        p => setTel(prev => ({ ...prev, pct: 60 + Math.round(p.pct * 0.1), done: p.recordCount })),
+        log
       );
+      setHeader(lookupData.header);
 
-      setLookupHeader(lookupData.header);
+      /* 3 – fan out matching */
+      setStageLabel("Step 3 / 3 — Matching rows across workers…");
+      setStageNote(`Mode: ${MODES[selectedMode].label}`);
 
-      // Step 3: Parallel Web Worker Matching
-      setStage("matching");
-      setStageText("Stage 3/4: Matching Rows Across Workers...");
-
-      const matchedResults = await matcherLib.matchAllParallel(
+      const matched = await matcherLib.matchAll(
         masterData,
-        lookupData.lookupRows,
+        lookupData.rows,
         threshold,
-        (progress) => {
-          const currentElapsed = Math.round((performance.now() - startTimeRef.current) / 1000);
-          setTelemetry({
-            done: progress.done,
-            total: progress.total,
-            pct: progress.pct,
-            matchedCount: progress.matchedCount,
-            recPerSec: progress.recPerSec,
-            elapsedSec: currentElapsed,
-            etaSec: progress.etaSec,
-            activeWorkers: progress.activeWorkers,
+        selectedMode,
+        p => {
+          const elapsed = Math.round((performance.now() - t0Ref.current) / 1000);
+          setTel({
+            pct:          70 + Math.round(p.pct * 0.3),
+            done:         p.done,
+            total:        p.total,
+            matchedCount: p.matchedCount,
+            recPerSec:    p.recPerSec,
+            elapsedSec:   elapsed,
+            etaSec:       p.etaSec,
+            activeWorkers: p.activeWorkers,
+            totalWorkers:  p.totalWorkers,
           });
+          setStageNote(`${p.activeWorkers} / ${p.totalWorkers} workers active`);
         },
-        addLog
+        log
       );
 
-      if (timerRef.current) clearInterval(timerRef.current);
-      const finalTotalElapsed = Math.round((performance.now() - startTimeRef.current) / 1000);
+      clearInterval(timerRef.current);
+      const finalElapsed = Math.round((performance.now() - t0Ref.current) / 1000);
 
-      // Step 4: Done
-      setStage("done");
-      setStageText("Stage 4/4: Matching Complete!");
-      setTelemetry((prev) => ({
-        ...prev,
-        pct: 100,
-        elapsedSec: finalTotalElapsed,
-        etaSec: 0,
-      }));
-      setResults(matchedResults);
-      addLog(`Matching completed successfully in ${formatSeconds(finalTotalElapsed)}. Output ready for export.`);
+      setTel(p => ({ ...p, pct: 100, elapsedSec: finalElapsed, etaSec: 0, activeWorkers: 0 }));
+      setStageLabel("Complete");
+      setStageNote(`Finished in ${fmtSec(finalElapsed)}`);
+      setResults(matched);
+      log(`Done in ${fmtSec(finalElapsed)}. Results ready for download.`);
+
     } catch (err) {
-      console.error(err);
-      if (timerRef.current) clearInterval(timerRef.current);
-      setStage("error");
-      setStageText("Error Occurred");
+      clearInterval(timerRef.current);
+      setStageLabel("Error");
+      setStageNote("");
       setErrorMsg(err.message || String(err));
-      addLog(`[ERROR] ${err.message || String(err)}`);
+      log(`[ERROR] ${err.message || String(err)}`);
     } finally {
       setProcessing(false);
     }
-  }, [masterFile, lookupFile, threshold, addLog]);
+  }
 
-  const handleDownloadTxt = useCallback(() => {
-    if (!results) return;
-    addLog("Generating .txt export file...");
-    const blob = matcherLib.generateTxtBlob(lookupHeader, results);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `TTI_file_for_lookup_matched.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  /* ── downloads ─────────────────────────────────────────────────── */
+  function downloadTxt() {
+    log("Exporting .txt…");
+    const blob = matcherLib.generateTxtBlob(header, results);
+    const url  = URL.createObjectURL(blob);
+    const a    = Object.assign(document.createElement("a"), { href: url, download: "TTI_matched.txt" });
+    document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
-    addLog("Downloaded .txt file successfully.");
-  }, [results, lookupHeader, addLog]);
+    log("Downloaded TTI_matched.txt");
+  }
+  function downloadXlsx() {
+    log("Exporting .xlsx…");
+    const aoa  = [[header, "TTI code", "Match %"], ...results.map(r => [r.original, r.ttiCode, r.scorePct])];
+    const wb   = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "TTI Lookup");
+    XLSX.writeFile(wb, "TTI_matched.xlsx");
+    log("Downloaded TTI_matched.xlsx");
+  }
 
-  const handleDownloadXlsx = useCallback(() => {
-    if (!results) return;
-    addLog("Generating .xlsx workbook...");
-    const aoa = [[lookupHeader, "TTI code", "Match %"]];
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      aoa.push([r.original, r.ttiCode, r.scorePct]);
-    }
-    const sheet = XLSX.utils.aoa_to_sheet(aoa);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, sheet, "TTI Lookup");
-    XLSX.writeFile(workbook, "TTI_file_for_lookup_matched.xlsx");
-    addLog("Downloaded .xlsx file successfully.");
-  }, [results, lookupHeader, addLog]);
+  /* ── filtered preview ──────────────────────────────────────────── */
+  const allRows      = results || [];
+  const matchedRows  = allRows.filter(r => r.ttiCode);
+  const unmatchedRows= allRows.filter(r => !r.ttiCode);
+  const filtered     = (filter === "matched" ? matchedRows : filter === "unmatched" ? unmatchedRows : allRows)
+    .filter(r => !search || r.original?.toLowerCase().includes(search.toLowerCase()) ||
+                             r.ttiCode?.toLowerCase().includes(search.toLowerCase()))
+    .slice(0, 100);
 
-  const filteredResults = (results || []).filter((r) => {
-    if (filterMode === "matched" && !r.ttiCode) return false;
-    if (filterMode === "unmatched" && r.ttiCode) return false;
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      return (
-        (r.original && r.original.toLowerCase().includes(term)) ||
-        (r.ttiCode && r.ttiCode.toLowerCase().includes(term))
-      );
-    }
-    return true;
-  });
+  const isActive = processing || (stageLabel !== "Ready" && stageLabel !== "Complete" && stageLabel !== "Error");
+  const isDone   = stageLabel === "Complete";
+  const isError  = stageLabel === "Error";
 
-  const previewRows = filteredResults.slice(0, 100);
-
+  /* ── render ─────────────────────────────────────────────────────── */
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-8">
-      {/* Header */}
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-800">
+    <div className="max-w-5xl mx-auto px-4 py-10 space-y-8">
+
+      {/* ── header ─────────────────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4
+        pb-6 border-b border-slate-800">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">
-            TTI Code Matcher
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Fuzzy string matching for hotel datasets using Web Worker parallel array splitting.
+          <h1 className="text-2xl font-bold text-slate-100">TTI Code Matcher</h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Fuzzy hotel-record matching using Web Workers &amp; trigram candidate blocking.
           </p>
         </div>
-
-        <div className="flex items-center gap-2 text-xs text-emerald-400 bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-lg">
-          <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-          </svg>
-          <span className="font-medium">100% Local Browser Processing</span>
+        <div className="flex items-center gap-2 text-xs text-emerald-400 bg-slate-900
+          border border-slate-800 px-3 py-2 rounded-lg shrink-0">
+          <Icon d={I.shield} size={14} cls="text-emerald-400" />
+          <span className="font-medium">100% local — no data leaves your browser</span>
         </div>
-      </header>
+      </div>
 
-      {/* Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Master File Dropzone */}
-        <div className="glass-card rounded-xl p-6">
+      {/* ── upload + threshold row ─────────────────────────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+
+        {/* master */}
+        <div className="card p-5">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7e0 2.21 3.582-4 8-4s8 1.79 8 4"/>
-              </svg>
-            </div>
+            <span className="p-2 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
+              <Icon d={I.db} size={18} />
+            </span>
             <div>
-              <h2 className="font-semibold text-slate-200 text-sm">1. Master File</h2>
-              <p className="text-xs text-slate-400">Master TTI codes (.txt / .tsv / .csv)</p>
+              <p className="text-sm font-semibold text-slate-100">Master File</p>
+              <p className="text-[11px] text-slate-400">Contains TTI codes (.txt / .tsv)</p>
             </div>
           </div>
-
-          <label className="block border border-dashed border-slate-700 hover:border-slate-500 rounded-lg p-5 text-center cursor-pointer transition-colors bg-slate-900/50">
-            <input
-              type="file"
-              accept=".txt,.tsv,.csv"
-              className="hidden"
-              onChange={(e) => setMasterFile(e.target.files[0] || null)}
-            />
-            {masterFile ? (
-              <div className="space-y-1">
-                <p className="text-xs font-semibold text-indigo-300 truncate">{masterFile.name}</p>
-                <p className="text-[11px] text-slate-400">{formatBytes(masterFile.size)}</p>
-                <span className="inline-block mt-2 text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-800">Selected</span>
-              </div>
-            ) : (
-              <div className="space-y-2 py-2">
-                <svg className="w-7 h-7 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-                </svg>
-                <p className="text-xs text-slate-300 font-medium">Select Master File</p>
-                <p className="text-[11px] text-slate-500">Supports large datasets</p>
-              </div>
-            )}
-          </label>
+          <DropZone label="Select master file" hint="Supports large datasets"
+            accept=".txt,.tsv,.csv" file={masterFile} onChange={setMasterFile}
+            iconD={I.upload} />
         </div>
 
-        {/* Lookup File Dropzone */}
-        <div className="glass-card rounded-xl p-6">
+        {/* lookup */}
+        <div className="card p-5">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-              </svg>
-            </div>
+            <span className="p-2 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
+              <Icon d={I.file} size={18} />
+            </span>
             <div>
-              <h2 className="font-semibold text-slate-200 text-sm">2. Lookup File</h2>
-              <p className="text-xs text-slate-400">Target records to match (.txt / .csv)</p>
+              <p className="text-sm font-semibold text-slate-100">Lookup File</p>
+              <p className="text-[11px] text-slate-400">Needs TTI codes mapped</p>
             </div>
           </div>
-
-          <label className="block border border-dashed border-slate-700 hover:border-slate-500 rounded-lg p-5 text-center cursor-pointer transition-colors bg-slate-900/50">
-            <input
-              type="file"
-              accept=".txt,.tsv,.csv"
-              className="hidden"
-              onChange={(e) => setLookupFile(e.target.files[0] || null)}
-            />
-            {lookupFile ? (
-              <div className="space-y-1">
-                <p className="text-xs font-semibold text-indigo-300 truncate">{lookupFile.name}</p>
-                <p className="text-[11px] text-slate-400">{formatBytes(lookupFile.size)}</p>
-                <span className="inline-block mt-2 text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-800">Selected</span>
-              </div>
-            ) : (
-              <div className="space-y-2 py-2">
-                <svg className="w-7 h-7 mx-auto text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-                </svg>
-                <p className="text-xs text-slate-300 font-medium">Select Lookup File</p>
-                <p className="text-[11px] text-slate-500">Supports millions of rows</p>
-              </div>
-            )}
-          </label>
+          <DropZone label="Select lookup file" hint="Supports millions of rows"
+            accept=".txt,.tsv,.csv" file={lookupFile} onChange={setLookupFile}
+            iconD={I.upload} />
         </div>
 
-        {/* Threshold Card */}
-        <div className="glass-card rounded-xl p-6 flex flex-col justify-between">
+        {/* threshold + start */}
+        <div className="card p-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
-                  </svg>
-                </div>
+                <span className="p-2 rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-900">
+                  <Icon d={I.sliders} size={18} />
+                </span>
                 <div>
-                  <h2 className="font-semibold text-slate-200 text-sm">3. Threshold</h2>
-                  <p className="text-xs text-slate-400">Match confidence minimum</p>
+                  <p className="text-sm font-semibold text-slate-100">Threshold</p>
+                  <p className="text-[11px] text-slate-400">Match confidence minimum</p>
                 </div>
               </div>
-              <span className="text-xl font-bold text-indigo-400 font-mono">{threshold}%</span>
+              <span className="text-xl font-bold font-mono text-indigo-400">{threshold}%</span>
             </div>
-
-            <div className="space-y-3">
-              <input
-                type="range"
-                min="30"
-                max="95"
-                step="1"
-                value={threshold}
-                onChange={(e) => setThreshold(Number(e.target.value))}
-                className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-              />
-              <div className="flex justify-between text-[11px] text-slate-400 font-medium">
-                <span>30% (Loose)</span>
-                <span>70% (Standard)</span>
-                <span>95% (Strict)</span>
-              </div>
+            <input type="range" min="30" max="95" step="1" value={threshold}
+              onChange={e => setThreshold(Number(e.target.value))}
+              className="w-full h-1.5 bg-slate-800 rounded appearance-none cursor-pointer accent-indigo-500" />
+            <div className="flex justify-between text-[10px] text-slate-500 font-medium mt-1.5">
+              <span>30% Loose</span><span>70% Standard</span><span>95% Strict</span>
             </div>
           </div>
 
           <button
-            onClick={handleProcess}
+            onClick={() => canProcess && setShowModal(true)}
             disabled={!canProcess}
-            className={`w-full py-3 px-5 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2 mt-4 ${
-              canProcess
-                ? "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-sm"
-                : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
-            }`}
-          >
-            {processing ? (
-              <>
-                <svg className="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>Processing...</span>
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                </svg>
-                <span>Start Matching</span>
-              </>
-            )}
+            className="btn-primary w-full justify-center mt-5 py-3">
+            {processing
+              ? <><svg className="spin" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2.5">
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                </svg> Processing…</>
+              : <><Icon d={I.bolt} size={15} /> Start Matching</>
+            }
           </button>
         </div>
       </div>
 
-      {/* Progress & Telemetry Section */}
-      {(processing || stage === "done" || stage === "error") && (
-        <div className="glass-card rounded-xl p-6 space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900 p-4 rounded-lg border border-slate-800">
+      {/* ── progress panel ─────────────────────────────────────────── */}
+      {(processing || isDone || isError) && (
+        <div className="card p-6 space-y-5">
+
+          {/* stage banner */}
+          <div className="flex items-center justify-between bg-slate-900 rounded-lg
+            border border-slate-800 px-4 py-3">
             <div className="flex items-center gap-3">
-              <span className={`w-2.5 h-2.5 rounded-full ${processing ? "bg-indigo-400 animate-pulse" : stage === "done" ? "bg-emerald-400" : "bg-red-400"}`}></span>
+              <span className={`w-2.5 h-2.5 rounded-full shrink-0
+                ${processing ? "bg-indigo-400 pulse" : isDone ? "bg-emerald-400" : "bg-red-400"}`} />
               <div>
-                <h3 className="font-semibold text-slate-100 text-sm">{stageText}</h3>
-                <p className="text-xs text-slate-400">
-                  {stage === "matching"
-                    ? `${telemetry.activeWorkers} Web Workers running in parallel`
-                    : stage === "done"
-                    ? "Execution completed."
-                    : "Processing..."}
-                </p>
+                <p className="text-sm font-semibold text-slate-100">{stageLabel}</p>
+                {stageNote && <p className="text-xs text-slate-400">{stageNote}</p>}
               </div>
             </div>
-            <span className="font-mono text-lg font-bold text-indigo-400">{telemetry.pct}%</span>
+            <span className="font-mono text-base font-bold text-indigo-400">{tel.pct}%</span>
           </div>
 
-          <div className="space-y-1.5">
-            <div className="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden border border-slate-800">
-              <div
-                className="bg-indigo-600 h-full rounded-full transition-all duration-200"
-                style={{ width: `${Math.min(100, Math.max(0, telemetry.pct))}%` }}
-              ></div>
+          {/* bar */}
+          <div>
+            <div className="progress-track">
+              <div className="progress-fill" style={{ width: `${tel.pct}%` }} />
             </div>
-            <div className="flex justify-between text-xs text-slate-400 font-mono">
-              <span>{telemetry.done.toLocaleString()} processed</span>
-              <span>{telemetry.total.toLocaleString()} total rows</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="glass-card-sm p-4 rounded-lg space-y-1">
-              <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Elapsed Time</p>
-              <p className="text-xl font-bold font-mono text-slate-100">{formatSeconds(telemetry.elapsedSec)}</p>
-            </div>
-
-            <div className="glass-card-sm p-4 rounded-lg space-y-1">
-              <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Estimated Time (ETA)</p>
-              <p className="text-xl font-bold font-mono text-indigo-400">
-                {processing && stage === "matching" ? formatSeconds(telemetry.etaSec) : "--:--"}
-              </p>
-            </div>
-
-            <div className="glass-card-sm p-4 rounded-lg space-y-1">
-              <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Speed</p>
-              <p className="text-xl font-bold font-mono text-slate-200">
-                {telemetry.recPerSec > 0 ? `${telemetry.recPerSec.toLocaleString()}` : "0"}{" "}
-                <span className="text-xs font-normal text-slate-400">rec/s</span>
-              </p>
-            </div>
-
-            <div className="glass-card-sm p-4 rounded-lg space-y-1">
-              <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Matches Found</p>
-              <p className="text-xl font-bold font-mono text-emerald-400">
-                {telemetry.matchedCount.toLocaleString()}{" "}
-                <span className="text-xs font-normal text-slate-400">
-                  ({telemetry.done > 0 ? ((telemetry.matchedCount / telemetry.done) * 100).toFixed(1) : 0}%)
-                </span>
-              </p>
+            <div className="flex justify-between text-[11px] text-slate-500 font-mono mt-1">
+              <span>{fmtNum(tel.done)} processed</span>
+              <span>{tel.total > 0 ? fmtNum(tel.total) + " total" : ""}</span>
             </div>
           </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs font-medium text-slate-400">
-              <span className="flex items-center gap-2">
-                <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                </svg>
-                Event Log
+          {/* stats grid */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat label="Elapsed" value={fmtSec(tel.elapsedSec)}
+              iconD={I.clock} iconCls="text-slate-400" />
+            <Stat label="ETA"
+              value={processing && tel.etaSec > 0 ? fmtSec(tel.etaSec) : "--:--"}
+              iconD={I.gauge} iconCls="text-indigo-400" />
+            <Stat label="Speed"
+              value={`${fmtNum(tel.recPerSec)}`}
+              sub="records / sec"
+              iconD={I.activity} iconCls="text-slate-300" />
+            <Stat
+              label="Workers"
+              value={`${tel.activeWorkers} / ${tel.totalWorkers}`}
+              sub={tel.activeWorkers > 0 ? "active" : isDone ? "finished" : ""}
+              iconD={I.workers} iconCls="text-indigo-400" />
+          </div>
+
+          {/* matches found strip */}
+          {tel.matchedCount > 0 && (
+            <div className="card-inner px-4 py-2.5 rounded-lg flex items-center gap-3">
+              <Icon d={I.check} size={15} cls="text-emerald-400" />
+              <span className="text-sm text-slate-200">
+                <span className="font-bold font-mono text-emerald-400">{fmtNum(tel.matchedCount)}</span>
+                {" "}matches found so far
+                {tel.done > 0 && (
+                  <span className="text-slate-400 ml-1">
+                    ({((tel.matchedCount / tel.done) * 100).toFixed(1)}%)
+                  </span>
+                )}
               </span>
-              <span>{logs.length} events</span>
             </div>
-            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3.5 font-mono text-xs text-slate-300 h-36 overflow-y-auto custom-scrollbar space-y-1 leading-relaxed">
-              {logs.map((log, i) => (
+          )}
+
+          {/* event log */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2 text-[11px] text-slate-400 font-medium">
+                <Icon d={I.terminal} size={13} />
+                <span>Event Log</span>
+              </div>
+              <span className="text-[11px] text-slate-500">{logs.length} events</span>
+            </div>
+            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono
+              text-[11px] text-slate-300 h-32 overflow-y-auto scroll leading-relaxed space-y-0.5">
+              {logs.map((l, i) => (
                 <div key={i} className="flex gap-2">
-                  <span className="text-slate-500 select-none">&gt;</span>
-                  <span className={log.includes("[ERROR]") ? "text-red-400 font-semibold" : ""}>{log}</span>
+                  <span className="text-slate-600 select-none">&gt;</span>
+                  <span className={l.includes("[ERROR]") ? "text-red-400 font-semibold" : ""}>{l}</span>
                 </div>
               ))}
               <div ref={logEndRef} />
@@ -495,151 +546,126 @@ function App() {
         </div>
       )}
 
-      {/* Error Banner */}
+      {/* ── error banner ───────────────────────────────────────────── */}
       {errorMsg && (
-        <div className="p-4 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-sm flex items-center gap-3">
-          <svg className="w-5 h-5 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-          </svg>
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm">
+          <Icon d={I.x} size={16} cls="text-red-400 shrink-0 mt-0.5" />
           <div>
             <p className="font-semibold">Processing Failed</p>
-            <p className="text-xs text-red-400/90">{errorMsg}</p>
+            <p className="text-xs text-red-400 mt-0.5">{errorMsg}</p>
           </div>
         </div>
       )}
 
-      {/* Export & Results Section */}
+      {/* ── results panel ──────────────────────────────────────────── */}
       {results && results.length > 0 && (
-        <div className="glass-card rounded-xl p-6 space-y-6">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pb-6 border-b border-slate-800">
+        <div className="card p-6 space-y-5">
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4
+            pb-5 border-b border-slate-800">
             <div>
-              <h2 className="text-lg font-bold text-slate-100">Matching Results</h2>
-              <p className="text-xs text-slate-400">
-                {results.length.toLocaleString()} rows processed. Download full dataset or preview below.
+              <h2 className="text-base font-semibold text-slate-100">Results</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {fmtNum(results.length)} rows — {fmtNum(matchedRows.length)} matched,{" "}
+                {fmtNum(unmatchedRows.length)} unmatched
               </p>
             </div>
-
-            <div className="flex items-center gap-3 w-full sm:w-auto">
-              <button
-                onClick={handleDownloadTxt}
-                className="flex-1 sm:flex-initial py-2 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                </svg>
-                <span>Download .txt / .tsv</span>
+            <div className="flex gap-2.5">
+              <button onClick={downloadTxt} className="btn-primary">
+                <Icon d={I.download} size={14} />Download .txt
               </button>
-
-              <button
-                onClick={handleDownloadXlsx}
-                className="flex-1 sm:flex-initial py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition-colors flex items-center justify-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                </svg>
-                <span>Download .xlsx</span>
+              <button onClick={downloadXlsx} className="btn-green">
+                <Icon d={I.download} size={14} />Download .xlsx
               </button>
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="relative w-full sm:w-72">
+          {/* search + filter */}
+          <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
+            <div className="relative w-full sm:w-64">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                <Icon d={I.search} size={14} />
+              </span>
               <input
-                type="text"
-                placeholder="Search hotel or TTI code..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3.5 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-              />
+                type="text" placeholder="Search hotel or TTI code…"
+                value={search} onChange={e => setSearch(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-3 py-2
+                  text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500" />
             </div>
-
-            <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs w-full sm:w-auto">
-              <button
-                onClick={() => setFilterMode("all")}
-                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
-                  filterMode === "all" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                All ({results.length.toLocaleString()})
-              </button>
-              <button
-                onClick={() => setFilterMode("matched")}
-                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
-                  filterMode === "matched" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Matched ({results.filter((r) => r.ttiCode).length.toLocaleString()})
-              </button>
-              <button
-                onClick={() => setFilterMode("unmatched")}
-                className={`px-3 py-1.5 rounded-md transition-colors font-medium ${
-                  filterMode === "unmatched" ? "bg-amber-600 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Unmatched ({results.filter((r) => !r.ttiCode).length.toLocaleString()})
-              </button>
+            <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
+              {[["all","All"],["matched","Matched"],["unmatched","Unmatched"]].map(([k,lbl]) => (
+                <button key={k} onClick={() => setFilter(k)}
+                  className={`px-3 py-1.5 rounded-md font-medium transition-colors
+                    ${filter === k ? (k === "unmatched" ? "bg-amber-700 text-white"
+                      : k === "matched" ? "bg-emerald-700 text-white"
+                      : "bg-indigo-600 text-white")
+                      : "text-slate-400 hover:text-slate-200"}`}>
+                  {lbl}
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950">
-            <div className="max-h-96 overflow-y-auto custom-scrollbar">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="bg-slate-900 sticky top-0 text-slate-400 border-b border-slate-800 font-semibold">
+          {/* table */}
+          <div className="border border-slate-800 rounded-lg overflow-hidden">
+            <div className="max-h-96 overflow-y-auto scroll">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0 bg-slate-900 text-slate-400 border-b border-slate-800">
                   <tr>
-                    <th className="py-2.5 px-4 w-12">#</th>
-                    <th className="py-2.5 px-4">{lookupHeader}</th>
-                    <th className="py-2.5 px-4 w-48">Matched TTI Code</th>
-                    <th className="py-2.5 px-4 w-24 text-right">Score %</th>
+                    <th className="py-2.5 px-3 w-12 font-semibold">#</th>
+                    <th className="py-2.5 px-3 font-semibold">{header}</th>
+                    <th className="py-2.5 px-3 w-44 font-semibold">TTI Code</th>
+                    <th className="py-2.5 px-3 w-20 text-right font-semibold">Score</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800 text-slate-300 font-mono">
-                  {previewRows.map((r, i) => (
-                    <tr key={i} className="hover:bg-slate-900/50 transition-colors">
-                      <td className="py-2.5 px-4 text-slate-500">{r.rowIndex}</td>
-                      <td className="py-2.5 px-4 font-sans max-w-md truncate" title={r.original}>
-                        {r.original}
+                <tbody className="divide-y divide-slate-800 font-mono">
+                  {filtered.map((r, i) => (
+                    <tr key={i} className="hover:bg-slate-900/60 transition-colors">
+                      <td className="py-2.5 px-3 text-slate-600">{r.rowIndex}</td>
+                      <td className="py-2.5 px-3 font-sans text-slate-300 max-w-xs truncate"
+                        title={r.original}>{r.original}</td>
+                      <td className="py-2.5 px-3">
+                        {r.ttiCode
+                          ? <span className="text-emerald-400 font-semibold">{r.ttiCode}</span>
+                          : <span className="text-slate-600 italic font-sans text-[11px]">—</span>
+                        }
                       </td>
-                      <td className="py-2.5 px-4">
-                        {r.ttiCode ? (
-                          <span className="text-emerald-400 font-semibold">{r.ttiCode}</span>
-                        ) : (
-                          <span className="text-slate-600 italic font-sans">No match</span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-4 text-right">
-                        {r.scorePct > 0 ? (
-                          <span
-                            className={`px-2 py-0.5 rounded font-bold ${
-                              r.scorePct >= 80
-                                ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                      <td className="py-2.5 px-3 text-right">
+                        {r.scorePct > 0
+                          ? <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold border
+                              ${r.scorePct >= 80
+                                ? "bg-emerald-950 text-emerald-400 border-emerald-800"
                                 : r.scorePct >= 60
-                                ? "bg-indigo-950 text-indigo-400 border border-indigo-800"
-                                : "bg-amber-950 text-amber-400 border border-amber-800"
-                            }`}
-                          >
-                            {r.scorePct}%
-                          </span>
-                        ) : (
-                          <span className="text-slate-600">-</span>
-                        )}
+                                ? "bg-indigo-950 text-indigo-400 border-indigo-800"
+                                : "bg-amber-950 text-amber-400 border-amber-800"}`}>
+                              {r.scorePct}%
+                            </span>
+                          : <span className="text-slate-600">—</span>
+                        }
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-
-            {filteredResults.length > 100 && (
-              <div className="bg-slate-900 px-4 py-2 text-center text-xs text-slate-400 border-t border-slate-800">
-                Showing first 100 preview rows of {filteredResults.length.toLocaleString()} records.
+            {allRows.length > 100 && (
+              <div className="bg-slate-900 px-4 py-2 text-center text-[11px] text-slate-400
+                border-t border-slate-800">
+                Showing first 100 of {fmtNum(filtered.length)} rows. Download to see all.
               </div>
             )}
           </div>
         </div>
       )}
+
+      {/* ── mode modal ─────────────────────────────────────────────── */}
+      {showModal && (
+        <ModeModal
+          onSelect={runWithMode}
+          onClose={() => setShowModal(false)} />
+      )}
     </div>
   );
 }
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<App />);
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);

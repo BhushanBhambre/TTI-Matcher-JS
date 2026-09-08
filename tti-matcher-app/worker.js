@@ -13,16 +13,8 @@ let ttiCodes = null;
 let iatas    = null;
 let blobs    = null;
 let index    = null;   // plain object: trigram -> Uint32Array
-let masterGramCache = null;  // Array<Set<string>|undefined> — lazily filled,
-                              // one Set per master record, computed ONCE
-                              // total instead of once per query row that
-                              // candidates it. This was the actual cause of
-                              // the ~15 rec/sec slowdown: getTrigramSet was
-                              // being called on the same master blob
-                              // thousands of times across different rows.
 
 const MAX_MATCHES = 20;
-let diagLogged = 0; // caps the diagnostic score logging to first few rows
 
 /* ── helpers ──────────────────────────────────────────────── */
 
@@ -40,11 +32,6 @@ function getTrigramSet(blob) {
   if (len < 3) { s.add(blob); return s; }
   for (let i = 0; i <= len - 3; i++) s.add(blob.slice(i, i + 3));
   return s;
-}
-
-function getMasterGrams(i) {
-  // build once, reuse forever after — this is the fix
-  return masterGramCache[i] || (masterGramCache[i] = getTrigramSet(blobs[i]));
 }
 
 function diceScore(setA, setB) {
@@ -68,30 +55,13 @@ function matchRow(queryBlob, queryIata, threshold) {
   if (candidates.size === 0) return [];
 
   const matches = [];
-  let bestRawScore = 0; // diagnostic only — best score seen, pre-threshold
-
   for (const i of candidates) {
-    const masterGrams = getMasterGrams(i); // ← was getTrigramSet(blobs[i]) every time
+    const masterGrams = getTrigramSet(blobs[i]);
     let score = diceScore(queryGrams, masterGrams);
     if (queryIata && iatas[i] && queryIata === iatas[i]) {
       score = Math.min(1, score * 0.85 + 0.15);
     }
-    if (score > bestRawScore) bestRawScore = score;
     if (score >= threshold) matches.push({ ttiCode: ttiCodes[i], score });
-  }
-
-  // One-time diagnostic: shows whether low match count is a threshold
-  // problem (bestRawScore consistently just under threshold) or a data/
-  // normalization problem (bestRawScore near 0 despite many candidates).
-  // Remove this block once you've confirmed which it is.
-  if (diagLogged < 20) {
-    diagLogged++;
-    self.postMessage({
-      type: "DIAG",
-      candidateCount: candidates.size,
-      bestRawScore: Math.round(bestRawScore * 1000) / 1000,
-      threshold,
-    });
   }
 
   matches.sort((a, b) => b.score - a.score);

@@ -218,6 +218,32 @@ function App() {
   const timerRef    = useRef(null);
   const t0Ref       = useRef(0);
 
+  const [sysRes, setSysRes] = useState({
+    usedHeap: 0,
+    totalHeap: 0,
+    heapLimit: 0,
+    cpuCores: typeof navigator !== "undefined" ? (navigator.hardwareConcurrency || 4) : 4,
+    cpuPct: 0,
+  });
+
+  // Resource sampler (runs every 800ms)
+  useEffect(() => {
+    function sample() {
+      const mem = typeof window !== "undefined" && window.performance && window.performance.memory;
+      const cores = typeof navigator !== "undefined" ? (navigator.hardwareConcurrency || 4) : 4;
+      setSysRes({
+        usedHeap: mem ? mem.usedJSHeapSize : 0,
+        totalHeap: mem ? mem.totalJSHeapSize : 0,
+        heapLimit: mem ? mem.jsHeapSizeLimit : 0,
+        cpuCores: cores,
+        cpuPct: tel.activeWorkers > 0 ? Math.min(100, Math.round((tel.activeWorkers / cores) * 100)) : 0,
+      });
+    }
+    sample();
+    const interval = setInterval(sample, 800);
+    return () => clearInterval(interval);
+  }, [tel.activeWorkers]);
+
   // auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -505,6 +531,86 @@ function App() {
               value={`${tel.activeWorkers} / ${tel.totalWorkers}`}
               sub={tel.activeWorkers > 0 ? "active" : isDone ? "finished" : ""}
               iconD={I.workers} iconCls="text-indigo-400" />
+          </div>
+
+          {/* ── System Resources (Memory & CPU) ──────────────────── */}
+          <div className="card-inner p-4 rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                <Icon d={I.cpu} size={15} cls="text-indigo-400" />
+                <span className="tracking-wide uppercase text-[11px] text-slate-400">System Resources</span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] font-mono">
+                <span className="flex items-center gap-1.5 text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded">
+                  <span className={`w-1.5 h-1.5 rounded-full bg-emerald-400 ${tel.activeWorkers > 0 ? "pulse" : ""}`} />
+                  {tel.activeWorkers > 0 ? `${tel.activeWorkers} Cores Active` : "Engine Idle"}
+                </span>
+                <span className="text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                  {MODES[mode]?.label || "Balanced"}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              {/* RAM Usage */}
+              <div className="bg-slate-900/80 p-3 rounded border border-slate-800/80">
+                <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
+                  <span>JS Heap Memory</span>
+                  <span className="font-mono text-indigo-300 font-semibold">
+                    {sysRes.usedHeap > 0 ? fmtBytes(sysRes.usedHeap) : "Active"}
+                  </span>
+                </div>
+                <div className="progress-track h-1.5 bg-slate-800">
+                  <div
+                    className="h-full bg-indigo-500 rounded-full transition-all duration-300"
+                    style={{
+                      width: `${sysRes.heapLimit > 0 ? Math.min(100, Math.max(3, Math.round((sysRes.usedHeap / sysRes.heapLimit) * 100))) : 8}%`
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 mt-1 font-mono">
+                  <span>{sysRes.totalHeap > 0 ? `Allocated: ${fmtBytes(sysRes.totalHeap)}` : "Dataset optimized"}</span>
+                  <span>{sysRes.heapLimit > 0 ? `Limit: ${fmtBytes(sysRes.heapLimit)}` : ""}</span>
+                </div>
+              </div>
+
+              {/* CPU Core Allocation */}
+              <div className="bg-slate-900/80 p-3 rounded border border-slate-800/80">
+                <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
+                  <span>CPU Allocation</span>
+                  <span className="font-mono text-emerald-400 font-semibold">
+                    {sysRes.cpuPct}% Load
+                  </span>
+                </div>
+                <div className="progress-track h-1.5 bg-slate-800">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                    style={{ width: `${Math.max(2, sysRes.cpuPct)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 mt-1 font-mono">
+                  <span>{tel.activeWorkers} / {sysRes.cpuCores} Threads</span>
+                  <span>{sysRes.cpuCores} Logical Cores</span>
+                </div>
+              </div>
+
+              {/* In-Memory Data Buffers */}
+              <div className="bg-slate-900/80 p-3 rounded border border-slate-800/80">
+                <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
+                  <span>Data In Memory</span>
+                  <span className="font-mono text-slate-200 font-semibold">
+                    {fmtBytes((masterFile?.size || 0) + (lookupFile?.size || 0))}
+                  </span>
+                </div>
+                <div className="progress-track h-1.5 bg-slate-800">
+                  <div className="h-full bg-cyan-500 rounded-full w-full" />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 mt-1 font-mono truncate">
+                  <span>M: {fmtBytes(masterFile?.size)}</span>
+                  <span>L: {fmtBytes(lookupFile?.size)}</span>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* matches found strip */}

@@ -89,10 +89,11 @@
             `${ev.data.prunedCount.toLocaleString()} stop-word trigrams pruned.`
           );
           resolve({
-            ttiCodes:         ev.data.ttiCodes,
-            iatas:            ev.data.iatas,
-            masterGramCounts: ev.data.masterGramCounts,
-            index:            ev.data.index,
+            ttiCodes:    ev.data.ttiCodes,
+            iatas:       ev.data.iatas,
+            offsets:     ev.data.offsets,
+            allTrigrams: ev.data.allTrigrams,
+            index:       ev.data.index,
           });
 
         } else if (type === "ERROR") {
@@ -223,7 +224,7 @@
 
           } else if (type === "DIAG") {
             if (onLog) {
-              onLog(`[Diag] Row ${ev.data.rowIndex}: ${ev.data.candidateCount} candidates, best score: ${(ev.data.bestRawScore * 100).toFixed(1)}% (threshold: ${(ev.data.threshold * 100).toFixed(0)}%)`);
+              onLog(`[Diag] Row ${ev.data.rowIndex}: ${ev.data.candidateCount} candidates, best score: ${ev.data.bestScorePct}% (threshold: ${ev.data.thresholdPct}%)`);
             }
 
           } else if (type === "DONE") {
@@ -256,10 +257,11 @@
         // Send master data to worker (shared reference – structured clone happens once per worker)
         wk.postMessage({
           type: "INIT",
-          ttiCodes:         masterData.ttiCodes,
-          iatas:            masterData.iatas,
-          masterGramCounts: masterData.masterGramCounts,
-          index:            masterData.index,
+          ttiCodes:    masterData.ttiCodes,
+          iatas:       masterData.iatas,
+          offsets:     masterData.offsets,
+          allTrigrams: masterData.allTrigrams,
+          index:       masterData.index,
         });
       }
 

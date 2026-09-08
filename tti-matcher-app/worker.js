@@ -1,95 +1,143 @@
 /**
  * worker.js
  * ---------------------------------------------------------------------------
- * High-performance, zero-allocation matching worker:
- *   1. Receives compact inverted index + masterGramCounts (Uint16Array).
- *   2. DOES NOT store or touch master blobs or master trigram Sets.
- *   3. Calculates Dice intersection directly via inverted index frequency counts:
- *      shared trigrams = count of times candidate appears in query's posting lists.
- *   4. Zero object allocations during matching loop — zero GC pause, zero OOM.
+ * High-performance, exact fuzzy matching worker:
+ *   1. Receives compact TypedArrays (offsets, allTrigrams, index) from masterWorker.
+ *   2. Extracts integer trigrams for each lookup query row.
+ *   3. Collects candidates using the inverted index (with all-record fallback).
+ *   4. Computes 100% EXACT Dice similarity against allTrigrams (all shingles included).
+ *   5. Finds the highest match %. If multiple master records tie for the best match %,
+ *      they are combined with "; " in the TTI code column.
+ *   6. Sub-threshold rows preserve their closest match % with empty TTI code.
  * ---------------------------------------------------------------------------
  */
 
 /* ── Globals set by INIT ──────────────────────────────────── */
-let ttiCodes         = null;
-let iatas            = null;
-let masterGramCounts = null; // Uint16Array: unique trigram count per master record
-let index            = null; // plain object: trigram -> Uint32Array
+let ttiCodes    = null; // string[]
+let iatas       = null; // string[]
+let offsets     = null; // Uint32Array: record start/end offsets in allTrigrams
+let allTrigrams = null; // Uint16Array: contiguous shingle integers for all master records
+let index       = null; // plain object: trigramInt -> Uint32Array
 
-let sharedCounts     = null; // Uint16Array: reusable frequency accumulator
-let touched          = null; // number[]: reusable touched candidate index list
+const MAX_MATCHES_TIE = 10;
 
-const MAX_MATCHES = 20;
-
-/* ── helpers ──────────────────────────────────────────────── */
-
-function getTrigramSet(blob) {
-  const s   = new Set();
-  const len = blob.length;
-  if (len === 0) return s;
-  if (len < 3) { s.add(blob); return s; }
-  for (let i = 0; i <= len - 3; i++) s.add(blob.slice(i, i + 3));
-  return s;
+function charToSymbol(code) {
+  if (code >= 97 && code <= 122) return code - 97; // a-z -> 0..25
+  if (code >= 48 && code <= 57) return code - 22;  // 0-9 -> 26..35
+  return -1;
 }
 
-function matchRow(queryBlob, queryIata, threshold) {
-  const queryGrams = getTrigramSet(queryBlob);
-  const sizeA = queryGrams.size;
-  if (sizeA === 0) return { bestScore: 0, bestCode: "", candidateCount: 0, matches: [] };
+function getTrigramInts(blob) {
+  const set = new Set();
+  const len = blob.length;
+  if (len === 0) return [];
+  if (len < 3) {
+    let h = 0;
+    for (let i = 0; i < len; i++) {
+      const sym = charToSymbol(blob.charCodeAt(i));
+      if (sym === -1) return [];
+      h = h * 36 + sym;
+    }
+    set.add(h);
+    return Array.from(set);
+  }
+  for (let i = 0; i <= len - 3; i++) {
+    const c0 = charToSymbol(blob.charCodeAt(i));
+    const c1 = charToSymbol(blob.charCodeAt(i + 1));
+    const c2 = charToSymbol(blob.charCodeAt(i + 2));
+    if (c0 === -1 || c1 === -1 || c2 === -1) continue;
+    set.add(c0 * 1296 + c1 * 36 + c2);
+  }
+  return Array.from(set);
+}
 
-  // Step 1: Accumulate shared trigram count via inverted index
-  for (const g of queryGrams) {
-    const bucket = index[g];
-    if (!bucket) continue;
-    for (let i = 0; i < bucket.length; i++) {
-      const id = bucket[i];
-      if (sharedCounts[id] === 0) {
-        touched.push(id);
+function matchRow(queryBlob, queryIata, thresholdPct) {
+  const queryGrams = getTrigramInts(queryBlob);
+  const sizeA = queryGrams.length;
+  if (sizeA === 0) {
+    return { bestScorePct: 0, bestCandidates: [], candidateCount: 0 };
+  }
+
+  const queryGramSet = new Set(queryGrams);
+  const thresholdFrac = thresholdPct / 100;
+
+  // Step 1: Candidate gathering via index
+  const candidateSet = new Set();
+  for (let k = 0; k < sizeA; k++) {
+    const bucket = index[queryGrams[k]];
+    if (bucket) {
+      for (let i = 0; i < bucket.length; i++) {
+        candidateSet.add(bucket[i]);
       }
-      sharedCounts[id]++;
     }
   }
 
-  const candidateCount = touched.length;
-  if (candidateCount === 0) {
-    return { bestScore: 0, bestCode: "", candidateCount: 0, matches: [] };
-  }
+  // Fallback: if no candidates share a trigram, search all records
+  const totalMaster = ttiCodes.length;
+  const candidateCount = candidateSet.size;
+  const candidates = candidateCount > 0 ? candidateSet : null;
 
-  const matches = [];
-  let bestRawScore = 0;
-  let bestCode = "";
+  let bestScore = 0;
+  let bestScorePct = 0;
+  let bestCandidates = [];
 
-  // Step 2: Score touched candidates directly from sharedCounts
-  for (let i = 0; i < touched.length; i++) {
-    const id = touched[i];
-    const inter = sharedCounts[id];
-    sharedCounts[id] = 0; // Reset in-place for zero-cost cleanup!
+  function evaluateCandidate(i) {
+    const start = offsets[i];
+    const end   = offsets[i + 1];
+    const sizeB = end - start;
+    if (sizeB === 0) return;
 
-    const sizeB = masterGramCounts[id];
+    // Theoretical upper bound early-exit check
+    const minSize = sizeA < sizeB ? sizeA : sizeB;
+    const maxPossible = Math.min(1, ((2 * minSize) / (sizeA + sizeB)) * 0.85 + 0.15);
+    if (maxPossible <= bestScore && maxPossible < thresholdFrac) {
+      return;
+    }
+
+    // Exact intersection count across all trigrams
+    let inter = 0;
+    for (let k = start; k < end; k++) {
+      if (queryGramSet.has(allTrigrams[k])) {
+        inter++;
+      }
+    }
+
+    if (inter === 0) return;
+
     let score = (2 * inter) / (sizeA + sizeB);
-
-    if (queryIata && iatas[id] && queryIata === iatas[id]) {
+    if (queryIata && iatas[i] && queryIata === iatas[i]) {
       score = Math.min(1, score * 0.85 + 0.15);
     }
 
-    if (score > bestRawScore) {
-      bestRawScore = score;
-      bestCode = ttiCodes[id];
-    }
+    const scorePct = Math.round(score * 1000) / 10;
 
-    if (score >= threshold) {
-      matches.push({ ttiCode: ttiCodes[id], score });
+    if (scorePct > bestScorePct) {
+      bestScorePct = scorePct;
+      bestScore = score;
+      bestCandidates = [ttiCodes[i]];
+    } else if (scorePct === bestScorePct && bestScorePct > 0) {
+      // Tie for best match %: append TTI code if not already present
+      if (bestCandidates.length < MAX_MATCHES_TIE && !bestCandidates.includes(ttiCodes[i])) {
+        bestCandidates.push(ttiCodes[i]);
+      }
     }
   }
 
-  touched.length = 0; // Reset for next query row!
+  if (candidates) {
+    for (const id of candidates) {
+      evaluateCandidate(id);
+    }
+  } else {
+    // Fallback scan across all records
+    for (let id = 0; id < totalMaster; id++) {
+      evaluateCandidate(id);
+    }
+  }
 
-  matches.sort((a, b) => b.score - a.score);
   return {
-    bestScore: bestRawScore,
-    bestCode,
-    candidateCount,
-    matches: matches.slice(0, MAX_MATCHES),
+    bestScorePct,
+    bestCandidates,
+    candidateCount: candidateCount > 0 ? candidateCount : totalMaster,
   };
 }
 
@@ -99,14 +147,11 @@ self.onmessage = function (ev) {
   const { type } = ev.data;
 
   if (type === "INIT") {
-    ttiCodes         = ev.data.ttiCodes;
-    iatas            = ev.data.iatas;
-    masterGramCounts = ev.data.masterGramCounts;
-    index            = ev.data.index;
-
-    // Allocate reusable TypedArray accumulator once per worker
-    sharedCounts     = new Uint16Array(ttiCodes.length);
-    touched          = [];
+    ttiCodes    = ev.data.ttiCodes;
+    iatas       = ev.data.iatas;
+    offsets     = ev.data.offsets;
+    allTrigrams = ev.data.allTrigrams;
+    index       = ev.data.index;
 
     self.postMessage({ type: "READY" });
     return;
@@ -114,43 +159,38 @@ self.onmessage = function (ev) {
 
   if (type === "MATCH") {
     const { workerId, slice, thresholdPct, reportEvery } = ev.data;
-    const threshold = thresholdPct / 100;
-    const results   = [];
-    let matched     = 0;
+    const results = [];
+    let matched = 0;
 
     for (let i = 0; i < slice.length; i++) {
       const row = slice[i];
-      const { bestScore, bestCode, candidateCount, matches } = matchRow(row.blob, row.iata, threshold);
+      const { bestScorePct, bestCandidates, candidateCount } = matchRow(row.blob, row.iata, thresholdPct);
 
-      // Diagnostic logging for the first 20 rows of worker 0:
+      // Diagnostic logging for the first 20 rows of worker 0
       if (workerId === 0 && i < 20) {
-        console.log(`[Worker ${workerId} Row ${row.rowIndex}] ${candidateCount} candidates, best score: ${(bestScore * 100).toFixed(1)}% (threshold: ${(threshold * 100).toFixed(0)}%)`);
+        console.log(`[Worker ${workerId} Row ${row.rowIndex}] ${candidateCount} candidates, best score: ${bestScorePct}% (threshold: ${thresholdPct}%)`);
         self.postMessage({
           type: "DIAG",
           workerId,
           rowIndex: row.rowIndex,
           candidateCount,
-          bestRawScore: Math.round(bestScore * 1000) / 1000,
-          threshold,
+          bestScorePct,
+          thresholdPct,
         });
       }
 
-      const matchObjs = matches.map(m => ({
-        ttiCode:  m.ttiCode,
-        scorePct: Math.round(m.score * 1000) / 10,
-      }));
-
-      const isMatched = matchObjs.length > 0;
+      const isMatched = bestScorePct >= thresholdPct && bestCandidates.length > 0;
       if (isMatched) matched++;
 
-      const bestScorePct = Math.round(bestScore * 1000) / 10;
+      // When matched, combine top-scoring TTI codes (e.g. ties); when unmatched, leave blank
+      const ttiCodeJoined = isMatched ? bestCandidates.join("; ") : "";
 
       results.push({
         rowIndex:  row.rowIndex,
         original:  row.original,
-        ttiCode:   isMatched ? matchObjs.map(m => m.ttiCode).join("; ") : "",
-        scorePct:  isMatched ? matchObjs[0].scorePct : bestScorePct,
-        scores:    isMatched ? matchObjs.map(m => m.scorePct).join("; ") : (bestScorePct > 0 ? String(bestScorePct) : ""),
+        ttiCode:   ttiCodeJoined,
+        scorePct:  bestScorePct,
+        scores:    bestScorePct > 0 ? String(bestScorePct) : "",
       });
 
       // Live progress update

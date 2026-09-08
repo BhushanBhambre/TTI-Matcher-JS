@@ -2,58 +2,80 @@
  * worker.js
  * ---------------------------------------------------------------------------
  * Web Worker thread for parallel fuzzy matching of lookup records against the
- * master index. Runs Dice coefficient fuzzy matching with candidate blocking.
+ * compact master index. Uses integer trigram hashing and candidate blocking.
  * ---------------------------------------------------------------------------
  */
 
-let masterRecords = [];
-let masterIndex = new Map();
+let ttiCodes = [];
+let iatas = [];
+let blobs = [];
+let indexBuckets = [];
 const MAX_MATCHES_PER_ROW = 20;
 
-function stripQuotes(s) {
-  const t = String(s || "").trim();
-  if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
-    return t.slice(1, -1);
-  }
-  return t;
+function charToSymbol(code) {
+  if (code >= 97 && code <= 122) return code - 97;
+  if (code >= 48 && code <= 57) return code - 22;
+  return -1;
 }
 
-function normalize(raw) {
-  return String(raw || "")
+function normalizeToCodes(raw) {
+  const str = String(raw || "")
     .toLowerCase()
-    .replace(/null/g, "")
-    .replace(/[^a-z0-9]/g, "");
+    .replace(/null/g, "");
+  const codes = [];
+  for (let i = 0; i < str.length; i++) {
+    const sym = charToSymbol(str.charCodeAt(i));
+    if (sym !== -1) codes.push(sym);
+  }
+  return codes;
 }
 
-function trigrams(blob) {
-  const grams = new Set();
-  if (blob.length < 3) {
-    if (blob.length > 0) grams.add(blob);
-    return grams;
+function extractTrigramSet(codes) {
+  const set = new Set();
+  const len = codes.length;
+  if (len < 3) {
+    if (len > 0) {
+      let h = 0;
+      for (let i = 0; i < len; i++) h = h * 36 + codes[i];
+      set.add(h);
+    }
+    return set;
   }
-  for (let i = 0; i <= blob.length - 3; i++) {
-    grams.add(blob.slice(i, i + 3));
+  for (let i = 0; i <= len - 3; i++) {
+    const h = codes[i] * 1296 + codes[i + 1] * 36 + codes[i + 2];
+    set.add(h);
   }
-  return grams;
+  return set;
 }
 
-function diceScore(setA, setB) {
-  if (setA.size === 0 || setB.size === 0) return 0;
-  const [small, big] = setA.size <= setB.size ? [setA, setB] : [setB, setA];
+function getMasterTrigramSet(blobStr) {
+  const codes = [];
+  for (let i = 0; i < blobStr.length; i++) {
+    const sym = charToSymbol(blobStr.charCodeAt(i));
+    if (sym !== -1) codes.push(sym);
+  }
+  return extractTrigramSet(codes);
+}
+
+function diceScore(querySet, masterSet) {
+  if (querySet.size === 0 || masterSet.size === 0) return 0;
+  const [small, big] = querySet.size <= masterSet.size ? [querySet, masterSet] : [masterSet, querySet];
   let intersection = 0;
   for (const g of small) {
     if (big.has(g)) intersection++;
   }
-  return (2 * intersection) / (setA.size + setB.size);
+  return (2 * intersection) / (querySet.size + masterSet.size);
 }
 
 function findAllMatches(query, thresholdPct) {
-  const queryGrams = trigrams(query.blob);
+  const queryCodes = normalizeToCodes(query.bodyText || query.original);
+  const queryTrigrams = extractTrigramSet(queryCodes);
   const thresholdFrac = thresholdPct / 100;
 
+  // Gather candidates from integer index buckets
   const candidateSet = new Set();
-  for (const g of queryGrams) {
-    const bucket = masterIndex.get(g);
+  for (const hash of queryTrigrams) {
+    const bucket = indexBuckets[hash];
     if (bucket) {
       for (let i = 0; i < bucket.length; i++) {
         candidateSet.add(bucket[i]);
@@ -61,20 +83,40 @@ function findAllMatches(query, thresholdPct) {
     }
   }
 
-  const candidates =
-    candidateSet.size > 0
-      ? candidateSet
-      : masterRecords.map((_, idx) => idx);
+  const candidateIndices = candidateSet.size > 0 ? candidateSet : null;
 
   const matches = [];
-  for (const i of candidates) {
-    const rec = masterRecords[i];
-    let score = diceScore(queryGrams, rec.grams);
-    if (query.iata && rec.iata && query.iata === rec.iata) {
-      score = Math.min(1, score * 0.85 + 0.15);
+
+  if (candidateIndices) {
+    for (const i of candidateIndices) {
+      const masterBlob = blobs[i];
+      const masterTrigrams = getMasterTrigramSet(masterBlob);
+      let score = diceScore(queryTrigrams, masterTrigrams);
+
+      const masterIata = iatas[i];
+      if (query.iata && masterIata && query.iata === masterIata) {
+        score = Math.min(1, score * 0.85 + 0.15);
+      }
+
+      if (score >= thresholdFrac) {
+        matches.push({ ttiCode: ttiCodes[i], score });
+      }
     }
-    if (score >= thresholdFrac) {
-      matches.push({ ttiCode: rec.ttiCode, score });
+  } else {
+    // Fallback if no candidate share trigrams
+    for (let i = 0; i < ttiCodes.length; i++) {
+      const masterBlob = blobs[i];
+      const masterTrigrams = getMasterTrigramSet(masterBlob);
+      let score = diceScore(queryTrigrams, masterTrigrams);
+
+      const masterIata = iatas[i];
+      if (query.iata && masterIata && query.iata === masterIata) {
+        score = Math.min(1, score * 0.85 + 0.15);
+      }
+
+      if (score >= thresholdFrac) {
+        matches.push({ ttiCode: ttiCodes[i], score });
+      }
     }
   }
 
@@ -86,19 +128,11 @@ self.onmessage = function (e) {
   const { type } = e.data;
 
   if (type === "INIT") {
-    const { records, indexEntries } = e.data;
-    masterRecords = records.map((r) => ({
-      ttiCode: r.ttiCode,
-      iata: r.iata,
-      blob: r.blob,
-      grams: new Set(r.grams),
-    }));
-
-    masterIndex = new Map();
-    for (let i = 0; i < indexEntries.length; i++) {
-      const [gram, bucket] = indexEntries[i];
-      masterIndex.set(gram, bucket);
-    }
+    const { masterRecords, indexBuckets: buckets } = e.data;
+    ttiCodes = masterRecords.ttiCodes;
+    iatas = masterRecords.iatas;
+    blobs = masterRecords.blobs;
+    indexBuckets = buckets;
 
     self.postMessage({ type: "INIT_DONE" });
     return;

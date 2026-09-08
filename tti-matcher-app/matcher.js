@@ -2,25 +2,12 @@
  * matcher.js
  * ---------------------------------------------------------------------------
  * High-performance streaming & multi-threaded fuzzy matching engine.
- * Supports streaming large master and lookup datasets (millions of records),
- * inverted trigram candidate indexing, stop-word pruning, and multi-worker execution.
+ * Supports 12GB+ files, background Web Worker master ingestion,
+ * integer trigram candidate index ($36^3 = 46,656$ buckets), and worker clusters.
  * ---------------------------------------------------------------------------
  */
 
 (function (global) {
-  const MASTER_COLUMNS = [
-    "TTIcode",
-    "HotelName",
-    "IATA_code",
-    "StreetNumber",
-    "AddressLine",
-    "PostalCode",
-    "AddressCityName",
-    "CityName",
-  ];
-
-  const MULTI_DELIMITER = "; ";
-
   function stripQuotes(s) {
     const t = String(s || "").trim();
     if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
@@ -29,134 +16,57 @@
     return t;
   }
 
-  function normalize(raw) {
-    return String(raw || "")
-      .toLowerCase()
-      .replace(/null/g, "")
-      .replace(/[^a-z0-9]/g, "");
-  }
-
-  function trigrams(blob) {
-    const grams = new Set();
-    if (blob.length < 3) {
-      if (blob.length > 0) grams.add(blob);
-      return grams;
-    }
-    for (let i = 0; i <= blob.length - 3; i++) {
-      grams.add(blob.slice(i, i + 3));
-    }
-    return Array.from(grams);
-  }
-
   /**
-   * Parse the Master file via chunked streaming.
+   * Parse Master file in background Web Worker (100% off main thread).
    */
-  async function streamParseMasterFile(file, onProgress, onLog) {
-    if (onLog) onLog(`Starting stream parse for Master File: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+  function parseMasterInWorker(file, onProgress, onLog) {
+    return new Promise((resolve, reject) => {
+      if (onLog) onLog(`Delegating Master File (${(file.size / 1024 / 1024).toFixed(1)} MB) to Background Ingestion Worker...`);
 
-    const records = [];
-    let header = null;
-    let colIndex = {};
-    let isFirstLine = true;
+      const worker = new Worker("masterWorker.js");
 
-    await global.streamReader.streamFile(file, {
-      onChunk: async (lines, bytesRead, totalBytes) => {
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line || !line.trim()) continue;
+      worker.onmessage = (e) => {
+        const { type } = e.data;
 
-          if (isFirstLine) {
-            isFirstLine = false;
-            header = line.split("\t").map((h) => h.trim());
-            for (const col of MASTER_COLUMNS) {
-              const idx = header.indexOf(col);
-              if (idx === -1) {
-                throw new Error(`Master file missing required column: "${col}"`);
-              }
-              colIndex[col] = idx;
-            }
-            continue;
+        if (type === "MASTER_PROGRESS") {
+          if (onProgress) {
+            onProgress({
+              stage: "master_parse",
+              bytesRead: e.data.bytesRead,
+              totalBytes: e.data.totalBytes,
+              recordCount: e.data.recordCount,
+              pct: e.data.pct,
+            });
           }
-
-          const cells = line.split("\t");
-          if (cells.length < 2) continue;
-
-          const ttiCode = (cells[colIndex.TTIcode] || "").trim();
-          if (!ttiCode) continue;
-
-          const blobSource =
-            (cells[colIndex.HotelName] || "") +
-            (cells[colIndex.StreetNumber] || "") +
-            (cells[colIndex.AddressLine] || "") +
-            (cells[colIndex.PostalCode] || "") +
-            (cells[colIndex.AddressCityName] || "") +
-            (cells[colIndex.CityName] || "");
-
-          const normalizedBlob = normalize(blobSource);
-          const iata = (cells[colIndex.IATA_code] || "").trim().toUpperCase();
-
-          records.push({
-            ttiCode,
-            iata,
-            blob: normalizedBlob,
-            grams: trigrams(normalizedBlob),
+        } else if (type === "MASTER_DONE") {
+          worker.terminate();
+          if (onLog) {
+            onLog(
+              `Master File parsed & indexed: ${e.data.recordCount.toLocaleString()} records, ${e.data.prunedCount.toLocaleString()} stop-word trigrams pruned.`
+            );
+          }
+          resolve({
+            recordCount: e.data.recordCount,
+            masterRecords: e.data.masterRecords,
+            indexBuckets: e.data.indexBuckets,
           });
         }
+      };
 
-        if (onProgress) {
-          onProgress({
-            stage: "master_parse",
-            bytesRead,
-            totalBytes,
-            recordCount: records.length,
-            pct: Math.round((bytesRead / totalBytes) * 100),
-          });
-        }
-      },
+      worker.onerror = (err) => {
+        worker.terminate();
+        reject(err);
+      };
+
+      worker.postMessage({ file });
     });
-
-    if (onLog) onLog(`Master File parsed successfully: ${records.length.toLocaleString()} valid records extracted.`);
-    if (onLog) onLog(`Building inverted trigram candidate index across ${records.length.toLocaleString()} master records...`);
-
-    // Build Inverted Index
-    const indexMap = new Map();
-    for (let i = 0; i < records.length; i++) {
-      const grams = records[i].grams;
-      for (let j = 0; j < grams.length; j++) {
-        const g = grams[j];
-        let bucket = indexMap.get(g);
-        if (!bucket) {
-          bucket = [];
-          indexMap.set(g, bucket);
-        }
-        bucket.push(i);
-      }
-    }
-
-    // Stop-word frequency pruning (removes high-frequency trigrams)
-    const MAX_POSTING_LIST = Math.max(300, Math.round(records.length * 0.005));
-    let prunedCount = 0;
-    for (const [gram, bucket] of indexMap) {
-      if (bucket.length > MAX_POSTING_LIST) {
-        indexMap.delete(gram);
-        prunedCount++;
-      }
-    }
-
-    if (onLog) {
-      onLog(
-        `Inverted Index built: ${indexMap.size.toLocaleString()} unique trigrams. Pruned ${prunedCount} ultra-common stop-words.`
-      );
-    }
-
-    return { records, indexMap };
   }
 
   /**
    * Parse the Lookup file via chunked streaming.
    */
   async function streamParseLookupFile(file, onProgress, onLog) {
-    if (onLog) onLog(`Starting stream parse for Lookup File: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+    if (onLog) onLog(`Streaming Lookup File (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
 
     let header = "Hotel Name and address";
     const lookupRows = [];
@@ -186,8 +96,8 @@
 
           lookupRows.push({
             rowIndex: totalLineIndex,
-            original: cells[0], // preserves raw string
-            blob: normalize(bodyText),
+            original: cells[0],
+            bodyText,
             iata,
           });
         }
@@ -204,7 +114,7 @@
       },
     });
 
-    if (onLog) onLog(`Lookup File parsed: ${lookupRows.length.toLocaleString()} rows ready for processing.`);
+    if (onLog) onLog(`Lookup File parsed: ${lookupRows.length.toLocaleString()} target records ready for matching.`);
     return { header, lookupRows };
   }
 
@@ -215,7 +125,6 @@
     const numWorkers = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 16));
     if (onLog) onLog(`Initializing ${numWorkers} parallel Web Workers...`);
 
-    const indexEntries = Array.from(master.indexMap.entries());
     const workers = [];
     const initPromises = [];
 
@@ -223,7 +132,7 @@
       const worker = new Worker("worker.js");
       workers.push(worker);
 
-      const p = new Promise((resolve) => {
+      const p = new Promise((resolve, reject) => {
         const handler = (e) => {
           if (e.data.type === "INIT_DONE") {
             worker.removeEventListener("message", handler);
@@ -231,17 +140,18 @@
           }
         };
         worker.addEventListener("message", handler);
+        worker.onerror = reject;
         worker.postMessage({
           type: "INIT",
-          records: master.records,
-          indexEntries,
+          masterRecords: master.masterRecords,
+          indexBuckets: master.indexBuckets,
         });
       });
       initPromises.push(p);
     }
 
     await Promise.all(initPromises);
-    if (onLog) onLog(`All ${numWorkers} Web Workers initialized with Master Index.`);
+    if (onLog) onLog(`All ${numWorkers} Web Workers loaded with compact Master dataset & integer trigram index.`);
 
     const BATCH_SIZE = lookupRows.length > 50000 ? 5000 : 2000;
     const totalRows = lookupRows.length;
@@ -250,13 +160,14 @@
       batches.push(lookupRows.slice(i, i + BATCH_SIZE));
     }
 
-    if (onLog) onLog(`Divided ${totalRows.toLocaleString()} lookup rows into ${batches.length} batches.`);
+    if (onLog) onLog(`Split ${totalRows.toLocaleString()} lookup records into ${batches.length} worker batches.`);
 
     let completedBatches = 0;
     let processedCount = 0;
     let matchedCount = 0;
     const allResults = new Array(totalRows);
     const startTime = performance.now();
+    let lastProgressReport = 0;
 
     return new Promise((resolve, reject) => {
       let nextBatchIdx = 0;
@@ -281,27 +192,31 @@
             completedBatches++;
             processedCount += results.length;
 
-            const elapsedSec = (performance.now() - startTime) / 1000;
+            const now = performance.now();
+            const elapsedSec = (now - startTime) / 1000;
             const recPerSec = elapsedSec > 0 ? Math.round(processedCount / elapsedSec) : 0;
             const remainingRecs = totalRows - processedCount;
             const etaSec = recPerSec > 0 ? Math.ceil(remainingRecs / recPerSec) : 0;
 
-            if (onProgress) {
-              onProgress({
-                stage: "matching",
-                done: processedCount,
-                total: totalRows,
-                pct: Math.round((processedCount / totalRows) * 100),
-                matchedCount,
-                recPerSec,
-                elapsedSec: Math.round(elapsedSec),
-                etaSec,
-                activeWorkers: numWorkers,
-              });
+            // Throttle progress updates to main thread (max 4 updates per sec)
+            if (now - lastProgressReport > 200 || completedBatches === batches.length) {
+              lastProgressReport = now;
+              if (onProgress) {
+                onProgress({
+                  stage: "matching",
+                  done: processedCount,
+                  total: totalRows,
+                  pct: Math.round((processedCount / totalRows) * 100),
+                  matchedCount,
+                  recPerSec,
+                  elapsedSec: Math.round(elapsedSec),
+                  etaSec,
+                  activeWorkers: numWorkers,
+                });
+              }
             }
 
             if (completedBatches === batches.length) {
-              // Terminate workers
               workers.forEach((w) => w.terminate());
               const finalElapsedSec = ((performance.now() - startTime) / 1000).toFixed(2);
               if (onLog) {
@@ -320,6 +235,7 @@
         };
 
         worker.addEventListener("message", onMessage);
+        worker.onerror = reject;
         worker.postMessage({
           type: "MATCH_BATCH",
           batchId: currentBatchIdx,
@@ -328,16 +244,12 @@
         });
       }
 
-      // Launch initial worker batch allocations
       for (let w = 0; w < workers.length; w++) {
         dispatchWorker(workers[w], w);
       }
     });
   }
 
-  /**
-   * Format results into a Blob for instant download.
-   */
   function generateTxtBlob(header, results) {
     const lines = [`${header}\tTTI code\tMatch %`];
     for (let i = 0; i < results.length; i++) {
@@ -348,9 +260,7 @@
   }
 
   global.matcherLib = {
-    normalize,
-    trigrams,
-    streamParseMasterFile,
+    parseMasterInWorker,
     streamParseLookupFile,
     matchAllParallel,
     generateTxtBlob,

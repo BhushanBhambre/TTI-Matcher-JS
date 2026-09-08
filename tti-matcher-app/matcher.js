@@ -221,6 +221,11 @@
             wprog[wIdx].matched = ev.data.matched;
             pushProgress();
 
+          } else if (type === "DIAG") {
+            if (onLog) {
+              onLog(`[Diag] Row ${ev.data.rowIndex}: ${ev.data.candidateCount} candidates, best score: ${(ev.data.bestRawScore * 100).toFixed(1)}% (threshold: ${(ev.data.threshold * 100).toFixed(0)}%)`);
+            }
+
           } else if (type === "DONE") {
             wprog[wIdx].done    = ev.data.results.length;
             wprog[wIdx].matched = ev.data.matched;
@@ -268,7 +273,7 @@
 
   function generateTxtBlob(header, results) {
     const lines = [`${header}\tTTI code\tMatch %`];
-    for (const r of results) lines.push(`${r.original}\t${r.ttiCode}\t${r.scorePct}`);
+    for (const r of results) lines.push(`${r.original}\t${r.ttiCode || ""}\t${r.scorePct}`);
     return new Blob([lines.join("\r\n")], { type: "text/plain;charset=utf-8" });
   }
 

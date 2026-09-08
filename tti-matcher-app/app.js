@@ -252,6 +252,41 @@ function App() {
   // cleanup timer
   useEffect(() => () => clearInterval(timerRef.current), []);
 
+  // Warn before reload/close while matching is running
+  useEffect(() => {
+    if (!processing) return;
+    const handler = (e) => {
+      e.preventDefault();
+      e.returnValue = "Matching is still in progress. Leaving now will cancel the job and you will lose all results. Are you sure?";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [processing]);
+
+  // Request notification permission once on mount (silently — no prompt if already granted/denied)
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // Fire a browser notification (falls back to nothing if permission denied)
+  const sendNotification = useCallback((title, body) => {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "granted") {
+      const n = new Notification(title, {
+        body,
+        icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234f46e5'%3E%3Cpath d='M13 2L3 14h9l-1 8 10-12h-9l1-8z'/%3E%3C/svg%3E",
+        badge: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234f46e5'%3E%3Cpath d='M13 2L3 14h9l-1 8 10-12h-9l1-8z'/%3E%3C/svg%3E",
+        tag: "tti-match-complete",
+        renotify: true,
+      });
+      // Auto-close after 8 seconds
+      setTimeout(() => n.close(), 8000);
+    }
+  }, []);
+
   const log = useCallback(msg => {
     const ts = new Date().toLocaleTimeString();
     setLogs(p => [...p, `[${ts}] ${msg}`]);
@@ -349,6 +384,13 @@ function App() {
       setStageNote(`Finished in ${fmtSec(finalElapsed)}`);
       setResults(matched);
       log(`Done in ${fmtSec(finalElapsed)}. Results ready for download.`);
+
+      // Browser alert notification — fires even if tab is in the background
+      const matchedCount = matched.filter(r => r.ttiCode).length;
+      sendNotification(
+        "✅ TTI Matching Complete!",
+        `${matchedCount.toLocaleString()} of ${matched.length.toLocaleString()} rows matched in ${fmtSec(finalElapsed)}. Results are ready to download.`
+      );
 
     } catch (err) {
       clearInterval(timerRef.current);

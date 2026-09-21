@@ -41,10 +41,10 @@ Because browsers enforce security restrictions on Web Workers and file fetches l
 
 ```bash
 # Option 1: Using npx serve (Node.js)
-npx serve tti-matcher-app
+npx serve .
 
 # Option 2: Using Python
-python3 -m http.server 8080 --directory tti-matcher-app
+python3 -m http.server 8080
 ```
 
 Then navigate to `http://localhost:3000` or `http://localhost:8080` in your web browser.

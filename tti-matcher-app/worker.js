@@ -72,13 +72,12 @@ function matchRow(queryBlob, queryIata, thresholdPct) {
     }
   }
 
-  // Fallback: if no candidates share a trigram, search all records
-  const totalMaster = ttiCodes.length;
+  const totalMaster    = ttiCodes.length;
   const candidateCount = candidateSet.size;
-  const candidates = candidateCount > 0 ? candidateSet : null;
+  const candidates     = candidateCount > 0 ? candidateSet : null;
 
-  let bestScore = 0;
-  let bestScorePct = 0;
+  let bestScore      = 0;
+  let bestScorePct   = 0;
   let bestCandidates = [];
 
   function evaluateCandidate(i) {
@@ -87,24 +86,23 @@ function matchRow(queryBlob, queryIata, thresholdPct) {
     const sizeB = end - start;
     if (sizeB === 0) return;
 
-    // Theoretical upper bound early-exit check
-    const minSize = sizeA < sizeB ? sizeA : sizeB;
-    const maxPossible = Math.min(1, ((2 * minSize) / (sizeA + sizeB)) * 0.85 + 0.15);
-    if (maxPossible <= bestScore && maxPossible < thresholdFrac) {
-      return;
-    }
-
-    // Exact intersection count across all trigrams
+    // Count exact shared trigrams
     let inter = 0;
     for (let k = start; k < end; k++) {
-      if (queryGramSet.has(allTrigrams[k])) {
-        inter++;
-      }
+      if (queryGramSet.has(allTrigrams[k])) inter++;
     }
-
     if (inter === 0) return;
 
-    let score = (2 * inter) / (sizeA + sizeB);
+    // Dice coefficient (standard)
+    const dice = (2 * inter) / (sizeA + sizeB);
+
+    // Containment: useful when lookup blob is much shorter than master blob
+    const minSize = sizeA < sizeB ? sizeA : sizeB;
+    const contain = inter / minSize;
+
+    // Use whichever gives a higher score (helps short lookup rows match longer master blobs)
+    let score = Math.max(dice, 0.5 * dice + 0.5 * contain);
+
     if (queryIata && iatas[i] && queryIata === iatas[i]) {
       score = Math.min(1, score * 0.85 + 0.15);
     }
@@ -112,11 +110,10 @@ function matchRow(queryBlob, queryIata, thresholdPct) {
     const scorePct = Math.round(score * 1000) / 10;
 
     if (scorePct > bestScorePct) {
-      bestScorePct = scorePct;
-      bestScore = score;
+      bestScorePct   = scorePct;
+      bestScore      = score;
       bestCandidates = [ttiCodes[i]];
     } else if (scorePct === bestScorePct && bestScorePct > 0) {
-      // Tie for best match %: append TTI code if not already present
       if (bestCandidates.length < MAX_MATCHES_TIE && !bestCandidates.includes(ttiCodes[i])) {
         bestCandidates.push(ttiCodes[i]);
       }
@@ -124,14 +121,9 @@ function matchRow(queryBlob, queryIata, thresholdPct) {
   }
 
   if (candidates) {
-    for (const id of candidates) {
-      evaluateCandidate(id);
-    }
+    for (const id of candidates) evaluateCandidate(id);
   } else {
-    // Fallback scan across all records
-    for (let id = 0; id < totalMaster; id++) {
-      evaluateCandidate(id);
-    }
+    for (let id = 0; id < totalMaster; id++) evaluateCandidate(id);
   }
 
   return {
@@ -152,7 +144,6 @@ self.onmessage = function (ev) {
     offsets     = ev.data.offsets;
     allTrigrams = ev.data.allTrigrams;
     index       = ev.data.index;
-
     self.postMessage({ type: "READY" });
     return;
   }
@@ -166,42 +157,31 @@ self.onmessage = function (ev) {
       const row = slice[i];
       const { bestScorePct, bestCandidates, candidateCount } = matchRow(row.blob, row.iata, thresholdPct);
 
-      // Diagnostic logging for the first 20 rows of worker 0
+      // Diagnostic: first 20 rows of worker 0
       if (workerId === 0 && i < 20) {
-        console.log(`[Worker ${workerId} Row ${row.rowIndex}] ${candidateCount} candidates, best score: ${bestScorePct}% (threshold: ${thresholdPct}%)`);
         self.postMessage({
           type: "DIAG",
           workerId,
-          rowIndex: row.rowIndex,
+          rowIndex:      row.rowIndex,
           candidateCount,
           bestScorePct,
           thresholdPct,
         });
       }
 
-      const isMatched = bestScorePct >= thresholdPct && bestCandidates.length > 0;
+      const isMatched     = bestScorePct >= thresholdPct && bestCandidates.length > 0;
       if (isMatched) matched++;
-
-      // When matched, combine top-scoring TTI codes (e.g. ties); when unmatched, leave blank
-      const ttiCodeJoined = isMatched ? bestCandidates.join("; ") : "";
 
       results.push({
         rowIndex:  row.rowIndex,
         original:  row.original,
-        ttiCode:   ttiCodeJoined,
+        ttiCode:   isMatched ? bestCandidates.join("; ") : "",
         scorePct:  bestScorePct,
         scores:    bestScorePct > 0 ? String(bestScorePct) : "",
       });
 
-      // Live progress update
       if ((i + 1) % reportEvery === 0 || i === slice.length - 1) {
-        self.postMessage({
-          type:     "PROGRESS",
-          workerId,
-          done:     i + 1,
-          total:    slice.length,
-          matched,
-        });
+        self.postMessage({ type: "PROGRESS", workerId, done: i + 1, total: slice.length, matched });
       }
     }
 

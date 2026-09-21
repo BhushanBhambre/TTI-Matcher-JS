@@ -96,6 +96,9 @@
             index:       ev.data.index,
           });
 
+        } else if (type === "LOG") {
+          if (onLog) onLog(ev.data.msg);
+
         } else if (type === "ERROR") {
           w.terminate();
           reject(new Error(ev.data.msg));
@@ -109,46 +112,70 @@
 
   /* ── step 2: stream lookup file (main thread, I/O-bound) ─ */
 
-  // Lookup column names for the NEW multi-column format
-  // IATA \t Hotel name \t phone \t address_1 \t address_2 \t address_3 \t address_4 \t city_name
-  const NEW_LOOKUP_COLS = ["iata", "hotel name", "phone", "address_1", "address_2", "address_3", "address_4", "city_name"];
+  /**
+   * Column name aliases for the new multi-column lookup format.
+   * Keys are the canonical field names; values are ordered lists of
+   * possible header spellings (case-insensitive, trimmed).
+   */
+  const LOOKUP_ALIASES = {
+    iata:     ["iata", "iata_code", "iata code"],
+    name:     ["hotel name", "hotelname", "name", "hotel"],
+    phone:    ["phone", "telephone", "tel"],
+    addr1:    ["address_1", "address1", "address line 1", "addressline1", "streetaddress"],
+    addr2:    ["address_2", "address2", "address line 2", "addressline2"],
+    addr3:    ["address_3", "address3", "address line 3", "addressline3"],
+    addr4:    ["address_4", "address4", "address line 4", "addressline4"],
+    city:     ["city_name", "cityname", "city", "addresscityname", "town"],
+    postal:   ["postalcode", "postal_code", "postal code", "zip", "zipcode"],
+  };
 
-  function detectLookupFormat(headerCells) {
-    // New format: has at least 3 tab-separated columns with known names
-    const lower = headerCells.map(c => c.toLowerCase().trim());
-    const hasHotelName = lower.some(c => c.includes("hotel") && c.includes("name"));
-    const hasIata      = lower.some(c => c === "iata");
-    return hasIata && hasHotelName ? "new" : "old";
+  function detectLookupCols(headerCells) {
+    const lc = headerCells.map(h => h.trim().toLowerCase());
+    const found = {};
+    for (const [key, aliases] of Object.entries(LOOKUP_ALIASES)) {
+      for (const alias of aliases) {
+        const idx = lc.indexOf(alias);
+        if (idx !== -1) { found[key] = idx; break; }
+      }
+    }
+    return found;           // { iata: 0, name: 1, phone: 2, addr1: 3, … }
   }
 
   async function parseLookupFile(file, onProgress, onLog) {
     if (onLog) onLog(`Reading lookup file: ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…`);
 
-    let header      = "Hotel Name and address";
-    const rows      = [];
-    let firstLine   = true;
-    let lineIndex   = 0;
-    let format      = null;   // "old" | "new"
-    let colIdx      = {};     // column name -> index (new format only)
+    let header     = "Hotel Name and address";
+    const rows     = [];
+    let firstLine  = true;
+    let lineIndex  = 0;
+    let lookupCols = null;   // populated from header row
+    let isNewFormat = false; // true = multi-column TSV; false = legacy pipe-delimited
 
     await global.streamReader.streamFile(file, {
       onChunk: async (lines, bytesRead, totalBytes) => {
         for (const line of lines) {
           if (!line.trim()) continue;
 
-          // ── Header row ──────────────────────────────────────
+          // ── Header ─────────────────────────────────────────
           if (firstLine) {
             firstLine = false;
-            header = line.trim();
-            const cells = line.split("\t");
-            format = detectLookupFormat(cells);
+            const headerCells = line.split("\t");
+            lookupCols = detectLookupCols(headerCells);
 
-            if (format === "new") {
-              const lower = cells.map(c => c.toLowerCase().trim());
-              for (const name of NEW_LOOKUP_COLS) {
-                const idx = lower.findIndex(c => c === name || c.includes(name.split(" ")[0]));
-                colIdx[name] = idx;
-              }
+            // New format = header has a recognisable "name" or "hotel name" col
+            isNewFormat = "name" in lookupCols;
+
+            if (isNewFormat) {
+              // Build a meaningful display header from the lookup file columns
+              const presentNames = headerCells.map(h => h.trim()).filter(Boolean);
+              header = presentNames.join(" | ");
+              if (onLog) onLog(
+                `Lookup format: multi-column TSV. Detected cols: ${JSON.stringify(lookupCols)}`
+              );
+            } else {
+              // Legacy: single cell, pipe-delimited ("Hotel Name,Address|IATA")
+              header = headerCells[0] || "Hotel Name and address";
+              if (onLog) onLog(`Lookup format: legacy pipe-delimited.`);
             }
             continue;
           }
@@ -156,63 +183,47 @@
           lineIndex++;
           const cells = line.split("\t");
 
-          // ── New multi-column TSV format ──────────────────────
-          if (format === "new") {
-            const iataIdx      = colIdx["iata"] >= 0 ? colIdx["iata"] : 0;
-            const hotelNameIdx = colIdx["hotel name"] >= 0 ? colIdx["hotel name"] : 1;
-            const phoneIdx     = colIdx["phone"] >= 0 ? colIdx["phone"] : 2;
-            const a1Idx        = colIdx["address_1"] >= 0 ? colIdx["address_1"] : 3;
-            const a2Idx        = colIdx["address_2"] >= 0 ? colIdx["address_2"] : 4;
-            const a3Idx        = colIdx["address_3"] >= 0 ? colIdx["address_3"] : 5;
-            const a4Idx        = colIdx["address_4"] >= 0 ? colIdx["address_4"] : 6;
-            const cityIdx      = colIdx["city_name"] >= 0 ? colIdx["city_name"] : 7;
+          if (isNewFormat) {
+            // ── New multi-column format ─────────────────────
+            // Extract IATA
+            const iata = lookupCols.iata !== undefined
+              ? (cells[lookupCols.iata] || "").trim().replace(/\s+/g, "").toUpperCase()
+              : "";
 
-            const iata = (cells[iataIdx] || "").trim().toUpperCase();
+            // Build the blob from every present column that master also uses:
+            // name + phone + addr1 + addr2 + addr3 + addr4 + city + postal
+            const parts = [];
+            for (const key of ["name","phone","addr1","addr2","addr3","addr4","city","postal"]) {
+              if (lookupCols[key] !== undefined) {
+                const val = stripQuotes(cells[lookupCols[key]] || "").trim();
+                if (val) parts.push(val);
+              }
+            }
+            const bodyText = parts.join(" ");
+            if (!bodyText && !iata) continue;
 
-            // All columns considered for matching: hotel name, phone, all address fields, city
-            const textParts = [
-              cells[hotelNameIdx] || "",
-              cells[phoneIdx] || "",
-              cells[a1Idx] || "",
-              cells[a2Idx] || "",
-              cells[a3Idx] || "",
-              cells[a4Idx] || "",
-              cells[cityIdx] || "",
-            ];
-            const blobSource = textParts.join(" ");
-
-            // Clean display representation for UI preview
-            const hotelName = stripQuotes((cells[hotelNameIdx] || "").trim());
-            const phoneVal  = stripQuotes((cells[phoneIdx] || "").trim());
-            const cityVal   = stripQuotes((cells[cityIdx] || "").trim());
-            const display   = `${hotelName}${cityVal ? " — " + cityVal : ""}${iata ? " (" + iata + ")" : ""}${phoneVal ? " · " + phoneVal : ""}`;
-
-            // Preserve full raw line for export
-            const original = line.trim();
-
-            if (!normalize(blobSource)) continue; // skip completely empty rows
+            // original display: all cells joined with tab for the output file
+            const original = cells.join("\t");
 
             rows.push({
               rowIndex: lineIndex,
               original,
-              display,
-              blob: normalize(blobSource),
+              blob: normalize(bodyText),
               iata,
             });
 
-          // ── Old pipe-delimited single-column format ──────────
           } else {
+            // ── Legacy pipe-delimited format ────────────────
             const rawCell = stripQuotes(cells[0] || "");
             if (!rawCell) continue;
 
-            const pipe = rawCell.lastIndexOf("|");
-            const body = pipe === -1 ? rawCell : rawCell.slice(0, pipe);
-            const iata = (pipe === -1 ? "" : rawCell.slice(pipe + 1)).trim().toUpperCase();
+            const pipe   = rawCell.lastIndexOf("|");
+            const body   = pipe === -1 ? rawCell : rawCell.slice(0, pipe);
+            const iata   = (pipe === -1 ? "" : rawCell.slice(pipe + 1)).trim().toUpperCase();
 
             rows.push({
               rowIndex: lineIndex,
               original: cells[0],
-              display:  cells[0],
               blob:     normalize(body),
               iata,
             });
@@ -221,14 +232,14 @@
 
         if (onProgress) onProgress({
           phase: "lookup",
-          pct: Math.round((bytesRead / totalBytes) * 100),
+          pct:   Math.round((bytesRead / totalBytes) * 100),
           recordCount: rows.length,
         });
       },
     });
 
-    if (onLog) onLog(`Lookup parse done (format: ${format}): ${rows.length.toLocaleString()} rows.`);
-    return { header, rows, format };
+    if (onLog) onLog(`Lookup parse done: ${rows.length.toLocaleString()} rows.`);
+    return { header, rows };
   }
 
   /* ── step 3: fan-out matching across workers ─────────── */

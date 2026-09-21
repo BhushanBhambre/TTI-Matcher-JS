@@ -1,24 +1,29 @@
 /**
  * masterWorker.js
  * ---------------------------------------------------------------------------
- * Background worker for Master File streaming and inverted index construction:
- *   1. Streams master file in 8 MB chunks in worker thread (zero main thread lag).
- *   2. Extracts 16-bit integer trigrams (0..46655).
- *   3. Stores all record trigrams in a single contiguous Uint16Array + Uint32Array offsets (ultra-compact, ~50MB for 1M records).
- *   4. Builds inverted index for fast candidate blocking.
- *   5. Prunes ultra-common stop-word trigrams from candidate blocking only —
- *      while preserving ALL trigrams in allTrigrams for 100% exact Dice scoring!
+ * Background worker for Master File streaming and inverted index construction.
+ *
+ * Supports the expanded master file format:
+ *   TTIcode, HotelName, IATA_code, StreetNumber, AddressLine, PostalCode,
+ *   AddressCityName, CityName, Phone, CountryName, FullAddress
+ *
+ * ALL available address/name/phone columns are used for the match blob so
+ * lookup rows with any subset of those fields can still score well.
+ *
+ * Blob field priority (concatenated in order):
+ *   HotelName + StreetNumber + AddressLine + PostalCode +
+ *   AddressCityName + CityName + Phone + CountryName
  * ---------------------------------------------------------------------------
  */
 
-const MASTER_COLUMNS = [
-  "TTIcode", "HotelName", "IATA_code",
-  "StreetNumber", "AddressLine", "PostalCode",
-  "AddressCityName", "CityName",
-];
+// Required columns — the worker will error if any is absent from the header.
+const REQUIRED_MASTER_COLS = ["TTIcode", "HotelName", "IATA_code"];
 
-// Optional columns — used when present, silently skipped when absent
-const MASTER_OPTIONAL_COLUMNS = ["Phone", "FullAddress"];
+// Optional columns — used when present, ignored when missing.
+const OPTIONAL_BLOB_COLS = [
+  "StreetNumber", "AddressLine", "PostalCode",
+  "AddressCityName", "CityName", "Phone", "CountryName",
+];
 
 const CHUNK = 8 * 1024 * 1024; // 8 MB chunks
 
@@ -31,7 +36,7 @@ function charToSymbol(code) {
 function normalize(raw) {
   return String(raw || "")
     .toLowerCase()
-    .replace(/null/g, "")
+    .replace(/null/gi, "")
     .replace(/[^a-z0-9]/g, "");
 }
 
@@ -73,57 +78,64 @@ self.onmessage = async (ev) => {
   const totalBytes = file.size;
   const decoder = new TextDecoder("utf-8");
 
-  const ttiCodes = [];
-  const iatas    = [];
-  const recordTrigrams = []; // array of number[] per record
+  const ttiCodes      = [];
+  const iatas         = [];
+  const recordTrigrams = [];
   let totalTrigramCount = 0;
 
-  let colIndex   = null;
-  let remainder  = "";
-  let offset     = 0;
+  let colIndex  = null;   // map of colName -> colPosition
+  let blobCols  = null;   // list of present optional cols (determined from header)
+  let remainder = "";
+  let offset    = 0;
   let lastReport = 0;
 
   function processLine(line) {
-    if (!line) return;
+    if (!line.trim()) return;
 
+    // ── Header ──────────────────────────────────────────────
     if (colIndex === null) {
       const header = line.split("\t").map(h => h.trim());
       colIndex = {};
-      for (const col of MASTER_COLUMNS) {
-        const idx = header.findIndex(h => h.toLowerCase() === col.toLowerCase());
+
+      // Validate required columns
+      for (const col of REQUIRED_MASTER_COLS) {
+        const idx = header.indexOf(col);
         if (idx === -1) {
-          self.postMessage({ type: "ERROR", msg: `Master file missing column: "${col}"` });
+          self.postMessage({ type: "ERROR", msg: `Master file missing required column: "${col}"` });
           return;
         }
         colIndex[col] = idx;
       }
-      // Resolve optional columns — case-insensitive
-      for (const col of MASTER_OPTIONAL_COLUMNS) {
-        colIndex[col] = header.findIndex(h => h.toLowerCase() === col.toLowerCase());
+
+      // Collect present optional columns
+      blobCols = [];
+      for (const col of OPTIONAL_BLOB_COLS) {
+        const idx = header.indexOf(col);
+        if (idx !== -1) {
+          colIndex[col] = idx;
+          blobCols.push(col);
+        }
       }
+
+      self.postMessage({ type: "LOG", msg: `Master columns detected: ${header.join(", ")}` });
+      self.postMessage({ type: "LOG", msg: `Blob fields used: HotelName + ${blobCols.join(" + ")}` });
       return;
     }
 
-    const cells = line.split("\t");
+    // ── Data row ─────────────────────────────────────────────
+    const cells   = line.split("\t");
     if (cells.length < 2) return;
 
     const ttiCode = (cells[colIndex.TTIcode] || "").trim();
     if (!ttiCode) return;
 
-    const phoneVal = colIndex["Phone"] >= 0 ? (cells[colIndex["Phone"]] || "") : "";
-    const fullAddrVal = colIndex["FullAddress"] >= 0 ? (cells[colIndex["FullAddress"]] || "") : "";
+    // Build blob: HotelName always first, then whatever optional cols exist
+    let blobSource = (cells[colIndex.HotelName] || "");
+    for (const col of blobCols) {
+      blobSource += " " + (cells[colIndex[col]] || "");
+    }
 
-    const blobSource =
-      (cells[colIndex.HotelName]       || "") + " " +
-      (cells[colIndex.StreetNumber]    || "") + " " +
-      (cells[colIndex.AddressLine]     || "") + " " +
-      (cells[colIndex.PostalCode]      || "") + " " +
-      (cells[colIndex.AddressCityName] || "") + " " +
-      (cells[colIndex.CityName]        || "") + " " +
-      fullAddrVal + " " +
-      phoneVal;
-
-    const blob = normalize(blobSource);
+    const blob        = normalize(blobSource);
     const trigramInts = getTrigramInts(blob);
 
     ttiCodes.push(ttiCode);
@@ -161,17 +173,15 @@ self.onmessage = async (ev) => {
     }
   }
 
-  if (remainder) {
-    processLine(remainder);
-  }
+  if (remainder) processLine(remainder);
 
   self.postMessage({ type: "MASTER_PARSE_DONE", recordCount: ttiCodes.length });
 
   /* ── Pack trigrams into compact contiguous TypedArrays ── */
-  const N = ttiCodes.length;
-  const offsets = new Uint32Array(N + 1);
+  const N          = ttiCodes.length;
+  const offsets    = new Uint32Array(N + 1);
   const allTrigrams = new Uint16Array(totalTrigramCount);
-  const tempBuckets = Object.create(null); // trigramInt -> number[]
+  const tempBuckets = Object.create(null);
 
   let writePtr = 0;
   for (let i = 0; i < N; i++) {
@@ -180,30 +190,22 @@ self.onmessage = async (ev) => {
     for (let k = 0; k < grams.length; k++) {
       const g = grams[k];
       allTrigrams[writePtr++] = g;
-
       let b = tempBuckets[g];
-      if (!b) {
-        b = [];
-        tempBuckets[g] = b;
-      }
+      if (!b) { b = []; tempBuckets[g] = b; }
       b.push(i);
     }
-    // Free per-record array to reduce memory
-    recordTrigrams[i] = null;
+    recordTrigrams[i] = null; // free per-record array
   }
   offsets[N] = writePtr;
 
-  /* ── Build index for candidate blocking (pruning stop-words) ── */
+  /* ── Build inverted index (candidate blocking only, stop-words pruned) ── */
   const MAX_BUCKET = Math.max(300, Math.round(N * 0.005));
-  const index = Object.create(null); // trigramInt -> Uint32Array
-  let pruned = 0;
+  const index      = Object.create(null);
+  let   pruned     = 0;
 
   for (const g in tempBuckets) {
     const arr = tempBuckets[g];
-    if (arr.length > MAX_BUCKET) {
-      pruned++;
-      continue; // Stop-word pruning for candidate gathering only
-    }
+    if (arr.length > MAX_BUCKET) { pruned++; continue; }
     index[g] = new Uint32Array(arr);
   }
 

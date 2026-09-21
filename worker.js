@@ -85,14 +85,7 @@ function matchRow(queryBlob, queryIata, thresholdPct) {
     const start = offsets[i];
     const end   = offsets[i + 1];
     const sizeB = end - start;
-    if (sizeB === 0) return;
-
-    // Theoretical upper bound early-exit check
     const minSize = sizeA < sizeB ? sizeA : sizeB;
-    const maxPossible = Math.min(1, ((2 * minSize) / (sizeA + sizeB)) * 0.85 + 0.15);
-    if (maxPossible <= bestScore && maxPossible < thresholdFrac) {
-      return;
-    }
 
     // Exact intersection count across all trigrams
     let inter = 0;
@@ -104,7 +97,11 @@ function matchRow(queryBlob, queryIata, thresholdPct) {
 
     if (inter === 0) return;
 
-    let score = (2 * inter) / (sizeA + sizeB);
+    const dice = (2 * inter) / (sizeA + sizeB);
+    const contain = inter / minSize;
+    // Balanced fuzzy similarity: combines Dice and containment overlap for asymmetric lengths
+    let score = Math.max(dice, 0.5 * dice + 0.5 * contain);
+
     if (queryIata && iatas[i] && queryIata === iatas[i]) {
       score = Math.min(1, score * 0.85 + 0.15);
     }

@@ -30,8 +30,11 @@ function charToSymbol(code) {
 
 function normalize(raw) {
   return String(raw || "")
+    .replace(/\bnull\b/gi, "")
+    .replace(/ß/g, "ss")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/null/g, "")
     .replace(/[^a-z0-9]/g, "");
 }
 

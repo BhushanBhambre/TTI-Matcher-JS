@@ -139,19 +139,16 @@
           // ── Header row ──────────────────────────────────────
           if (firstLine) {
             firstLine = false;
+            header = line.trim();
             const cells = line.split("\t");
             format = detectLookupFormat(cells);
 
             if (format === "new") {
-              // Map column names to indices (case-insensitive, trimmed)
               const lower = cells.map(c => c.toLowerCase().trim());
               for (const name of NEW_LOOKUP_COLS) {
                 const idx = lower.findIndex(c => c === name || c.includes(name.split(" ")[0]));
-                colIdx[name] = idx; // -1 if absent, that's fine
+                colIdx[name] = idx;
               }
-              header = "Hotel Name and address"; // output header stays the same
-            } else {
-              header = cells[0] || "Hotel Name and address";
             }
             continue;
           }
@@ -161,34 +158,44 @@
 
           // ── New multi-column TSV format ──────────────────────
           if (format === "new") {
-            // IATA is always column 0 in this format
-            const iata = (cells[0] || "").trim().toUpperCase();
+            const iataIdx      = colIdx["iata"] >= 0 ? colIdx["iata"] : 0;
+            const hotelNameIdx = colIdx["hotel name"] >= 0 ? colIdx["hotel name"] : 1;
+            const phoneIdx     = colIdx["phone"] >= 0 ? colIdx["phone"] : 2;
+            const a1Idx        = colIdx["address_1"] >= 0 ? colIdx["address_1"] : 3;
+            const a2Idx        = colIdx["address_2"] >= 0 ? colIdx["address_2"] : 4;
+            const a3Idx        = colIdx["address_3"] >= 0 ? colIdx["address_3"] : 5;
+            const a4Idx        = colIdx["address_4"] >= 0 ? colIdx["address_4"] : 6;
+            const cityIdx      = colIdx["city_name"] >= 0 ? colIdx["city_name"] : 7;
 
-            // Gather all text fields that contribute to identity:
-            // Hotel name + all four address fields + city_name
-            // (skip phone — not useful for fuzzy hotel matching)
+            const iata = (cells[iataIdx] || "").trim().toUpperCase();
+
+            // All columns considered for matching: hotel name, phone, all address fields, city
             const textParts = [
-              cells[1] || "",   // Hotel name
-              cells[3] || "",   // address_1
-              cells[4] || "",   // address_2
-              cells[5] || "",   // address_3
-              cells[6] || "",   // address_4
-              cells[7] || "",   // city_name
+              cells[hotelNameIdx] || "",
+              cells[phoneIdx] || "",
+              cells[a1Idx] || "",
+              cells[a2Idx] || "",
+              cells[a3Idx] || "",
+              cells[a4Idx] || "",
+              cells[cityIdx] || "",
             ];
             const blobSource = textParts.join(" ");
 
-            // Reconstruct a single "original" display string for the output
-            const hotelName = stripQuotes((cells[1] || "").trim());
-            const addrParts = [cells[3], cells[4], cells[5], cells[6], cells[7]]
-              .map(c => stripQuotes((c || "").trim()))
-              .filter(Boolean);
-            const original = `"${hotelName}${addrParts.length ? "," + addrParts.join(" ") : ""}|${iata}"`;
+            // Clean display representation for UI preview
+            const hotelName = stripQuotes((cells[hotelNameIdx] || "").trim());
+            const phoneVal  = stripQuotes((cells[phoneIdx] || "").trim());
+            const cityVal   = stripQuotes((cells[cityIdx] || "").trim());
+            const display   = `${hotelName}${cityVal ? " — " + cityVal : ""}${iata ? " (" + iata + ")" : ""}${phoneVal ? " · " + phoneVal : ""}`;
+
+            // Preserve full raw line for export
+            const original = line.trim();
 
             if (!normalize(blobSource)) continue; // skip completely empty rows
 
             rows.push({
               rowIndex: lineIndex,
               original,
+              display,
               blob: normalize(blobSource),
               iata,
             });
@@ -205,6 +212,7 @@
             rows.push({
               rowIndex: lineIndex,
               original: cells[0],
+              display:  cells[0],
               blob:     normalize(body),
               iata,
             });

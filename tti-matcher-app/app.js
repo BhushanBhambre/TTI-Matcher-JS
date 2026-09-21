@@ -420,7 +420,11 @@ function App() {
   }
   function downloadXlsx() {
     log("Exporting .xlsx…");
-    const aoa  = [[header, "TTI code", "Match %"], ...results.map(r => [r.original, r.ttiCode, r.scorePct])];
+    const headerCols = header.split("\t");
+    const aoa  = [
+      [...headerCols, "TTI code", "Match %"],
+      ...results.map(r => [...r.original.split("\t"), r.ttiCode || "", r.scorePct])
+    ];
     const wb   = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "TTI Lookup");
     XLSX.writeFile(wb, "TTI_matched.xlsx");
@@ -433,7 +437,8 @@ function App() {
   const unmatchedRows= allRows.filter(r => !r.ttiCode);
   const filtered     = (filter === "matched" ? matchedRows : filter === "unmatched" ? unmatchedRows : allRows)
     .filter(r => !search || r.original?.toLowerCase().includes(search.toLowerCase()) ||
-                             r.ttiCode?.toLowerCase().includes(search.toLowerCase()))
+                            r.display?.toLowerCase().includes(search.toLowerCase()) ||
+                            r.ttiCode?.toLowerCase().includes(search.toLowerCase()))
     .slice(0, 100);
 
   const isActive = processing || (stageLabel !== "Ready" && stageLabel !== "Complete" && stageLabel !== "Error");
@@ -766,7 +771,7 @@ function App() {
                 <thead className="sticky top-0 bg-slate-900 text-slate-400 border-b border-slate-800">
                   <tr>
                     <th className="py-2.5 px-3 w-12 font-semibold">#</th>
-                    <th className="py-2.5 px-3 font-semibold">{header}</th>
+                    <th className="py-2.5 px-3 font-semibold">{header.includes("\t") ? "Hotel Details" : header}</th>
                     <th className="py-2.5 px-3 w-44 font-semibold">TTI Code</th>
                     <th className="py-2.5 px-3 w-20 text-right font-semibold">Score</th>
                   </tr>
@@ -776,7 +781,7 @@ function App() {
                     <tr key={i} className="hover:bg-slate-900/60 transition-colors">
                       <td className="py-2.5 px-3 text-slate-600">{r.rowIndex}</td>
                       <td className="py-2.5 px-3 font-sans text-slate-300 max-w-xs truncate"
-                        title={r.original}>{r.original}</td>
+                        title={r.display || r.original}>{r.display || r.original}</td>
                       <td className="py-2.5 px-3">
                         {r.ttiCode
                           ? <span className="text-emerald-400 font-semibold">{r.ttiCode}</span>

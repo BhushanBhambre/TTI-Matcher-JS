@@ -17,6 +17,9 @@ const MASTER_COLUMNS = [
   "AddressCityName", "CityName",
 ];
 
+// Optional columns — used when present, silently skipped when absent
+const MASTER_OPTIONAL_COLUMNS = ["Phone", "FullAddress"];
+
 const CHUNK = 8 * 1024 * 1024; // 8 MB chunks
 
 function charToSymbol(code) {
@@ -87,12 +90,16 @@ self.onmessage = async (ev) => {
       const header = line.split("\t").map(h => h.trim());
       colIndex = {};
       for (const col of MASTER_COLUMNS) {
-        const idx = header.indexOf(col);
+        const idx = header.findIndex(h => h.toLowerCase() === col.toLowerCase());
         if (idx === -1) {
           self.postMessage({ type: "ERROR", msg: `Master file missing column: "${col}"` });
           return;
         }
         colIndex[col] = idx;
+      }
+      // Resolve optional columns — case-insensitive
+      for (const col of MASTER_OPTIONAL_COLUMNS) {
+        colIndex[col] = header.findIndex(h => h.toLowerCase() === col.toLowerCase());
       }
       return;
     }
@@ -103,13 +110,18 @@ self.onmessage = async (ev) => {
     const ttiCode = (cells[colIndex.TTIcode] || "").trim();
     if (!ttiCode) return;
 
+    const phoneVal = colIndex["Phone"] >= 0 ? (cells[colIndex["Phone"]] || "") : "";
+    const fullAddrVal = colIndex["FullAddress"] >= 0 ? (cells[colIndex["FullAddress"]] || "") : "";
+
     const blobSource =
-      (cells[colIndex.HotelName]       || "") +
-      (cells[colIndex.StreetNumber]    || "") +
-      (cells[colIndex.AddressLine]     || "") +
-      (cells[colIndex.PostalCode]      || "") +
-      (cells[colIndex.AddressCityName] || "") +
-      (cells[colIndex.CityName]        || "");
+      (cells[colIndex.HotelName]       || "") + " " +
+      (cells[colIndex.StreetNumber]    || "") + " " +
+      (cells[colIndex.AddressLine]     || "") + " " +
+      (cells[colIndex.PostalCode]      || "") + " " +
+      (cells[colIndex.AddressCityName] || "") + " " +
+      (cells[colIndex.CityName]        || "") + " " +
+      fullAddrVal + " " +
+      phoneVal;
 
     const blob = normalize(blobSource);
     const trigramInts = getTrigramInts(blob);

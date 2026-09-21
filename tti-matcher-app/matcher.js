@@ -109,39 +109,108 @@
 
   /* ── step 2: stream lookup file (main thread, I/O-bound) ─ */
 
+  // Lookup column names for the NEW multi-column format
+  // IATA \t Hotel name \t phone \t address_1 \t address_2 \t address_3 \t address_4 \t city_name
+  const NEW_LOOKUP_COLS = ["iata", "hotel name", "phone", "address_1", "address_2", "address_3", "address_4", "city_name"];
+
+  function detectLookupFormat(headerCells) {
+    // New format: has at least 3 tab-separated columns with known names
+    const lower = headerCells.map(c => c.toLowerCase().trim());
+    const hasHotelName = lower.some(c => c.includes("hotel") && c.includes("name"));
+    const hasIata      = lower.some(c => c === "iata");
+    return hasIata && hasHotelName ? "new" : "old";
+  }
+
   async function parseLookupFile(file, onProgress, onLog) {
     if (onLog) onLog(`Reading lookup file: ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…`);
 
-    let header     = "Hotel Name and address";
-    const rows     = [];
-    let firstLine  = true;
-    let lineIndex  = 0;
+    let header      = "Hotel Name and address";
+    const rows      = [];
+    let firstLine   = true;
+    let lineIndex   = 0;
+    let format      = null;   // "old" | "new"
+    let colIdx      = {};     // column name -> index (new format only)
 
     await global.streamReader.streamFile(file, {
       onChunk: async (lines, bytesRead, totalBytes) => {
         for (const line of lines) {
           if (!line.trim()) continue;
+
+          // ── Header row ──────────────────────────────────────
           if (firstLine) {
             firstLine = false;
-            header = line.split("\t")[0] || line;
+            const cells = line.split("\t");
+            format = detectLookupFormat(cells);
+
+            if (format === "new") {
+              // Map column names to indices (case-insensitive, trimmed)
+              const lower = cells.map(c => c.toLowerCase().trim());
+              for (const name of NEW_LOOKUP_COLS) {
+                const idx = lower.findIndex(c => c === name || c.includes(name.split(" ")[0]));
+                colIdx[name] = idx; // -1 if absent, that's fine
+              }
+              header = "Hotel Name and address"; // output header stays the same
+            } else {
+              header = cells[0] || "Hotel Name and address";
+            }
             continue;
           }
+
           lineIndex++;
-          const cells   = line.split("\t");
-          const rawCell = stripQuotes(cells[0] || "");
-          if (!rawCell) continue;
+          const cells = line.split("\t");
 
-          const pipe    = rawCell.lastIndexOf("|");
-          const body    = pipe === -1 ? rawCell : rawCell.slice(0, pipe);
-          const iata    = (pipe === -1 ? "" : rawCell.slice(pipe + 1)).trim().toUpperCase();
+          // ── New multi-column TSV format ──────────────────────
+          if (format === "new") {
+            // IATA is always column 0 in this format
+            const iata = (cells[0] || "").trim().toUpperCase();
 
-          rows.push({
-            rowIndex: lineIndex,
-            original: cells[0],
-            blob:     normalize(body),
-            iata,
-          });
+            // Gather all text fields that contribute to identity:
+            // Hotel name + all four address fields + city_name
+            // (skip phone — not useful for fuzzy hotel matching)
+            const textParts = [
+              cells[1] || "",   // Hotel name
+              cells[3] || "",   // address_1
+              cells[4] || "",   // address_2
+              cells[5] || "",   // address_3
+              cells[6] || "",   // address_4
+              cells[7] || "",   // city_name
+            ];
+            const blobSource = textParts.join(" ");
+
+            // Reconstruct a single "original" display string for the output
+            const hotelName = stripQuotes((cells[1] || "").trim());
+            const addrParts = [cells[3], cells[4], cells[5], cells[6], cells[7]]
+              .map(c => stripQuotes((c || "").trim()))
+              .filter(Boolean);
+            const original = `"${hotelName}${addrParts.length ? "," + addrParts.join(" ") : ""}|${iata}"`;
+
+            if (!normalize(blobSource)) continue; // skip completely empty rows
+
+            rows.push({
+              rowIndex: lineIndex,
+              original,
+              blob: normalize(blobSource),
+              iata,
+            });
+
+          // ── Old pipe-delimited single-column format ──────────
+          } else {
+            const rawCell = stripQuotes(cells[0] || "");
+            if (!rawCell) continue;
+
+            const pipe = rawCell.lastIndexOf("|");
+            const body = pipe === -1 ? rawCell : rawCell.slice(0, pipe);
+            const iata = (pipe === -1 ? "" : rawCell.slice(pipe + 1)).trim().toUpperCase();
+
+            rows.push({
+              rowIndex: lineIndex,
+              original: cells[0],
+              blob:     normalize(body),
+              iata,
+            });
+          }
         }
+
         if (onProgress) onProgress({
           phase: "lookup",
           pct: Math.round((bytesRead / totalBytes) * 100),
@@ -150,8 +219,8 @@
       },
     });
 
-    if (onLog) onLog(`Lookup parse done: ${rows.length.toLocaleString()} rows.`);
-    return { header, rows };
+    if (onLog) onLog(`Lookup parse done (format: ${format}): ${rows.length.toLocaleString()} rows.`);
+    return { header, rows, format };
   }
 
   /* ── step 3: fan-out matching across workers ─────────── */

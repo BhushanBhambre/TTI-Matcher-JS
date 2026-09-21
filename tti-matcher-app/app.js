@@ -348,6 +348,11 @@ function App() {
         log
       );
       setHeader(lookupData.header);
+      setStageNote(
+        lookupData.format === "new"
+          ? "New multi-column format detected (IATA · Hotel name · Address · City)"
+          : "Classic pipe-delimited format detected"
+      );
 
       /* 3 – fan out matching */
       setStageLabel("Step 3 / 3 — Matching rows across workers…");

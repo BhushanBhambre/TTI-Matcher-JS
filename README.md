@@ -18,7 +18,7 @@ Create a production bundle with `npm run build`; serve the generated `tti-lookup
 
 The workflow in `.github/workflows/pages.yml` runs on every push to `master` and can also be started manually from the Actions tab. It installs dependencies in `tti-lookup/`, runs `npm run build`, and deploys `tti-lookup/dist/` to GitHub Pages. The Vite base path is configured for this repository.
 
-For the first deployment, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**. The site will be available at <https://bhushanbhambre.github.io/TTI-Matcher-JS/> after the workflow succeeds.
+GitHub Pages is configured for this repository. After each successful workflow run, the site is available at <https://bhushanbhambre.github.io/TTI-Matcher-JS/>.
 
 ## Use
 
